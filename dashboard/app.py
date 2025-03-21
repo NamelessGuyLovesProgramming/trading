@@ -21,13 +21,20 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
+from backtesting.backtest_engine import BacktestEngine
 from data.data_fetcher import DataFetcher
 from data.data_processor import DataProcessor
-from backtesting.backtest_engine import BacktestEngine
 from strategy.example_strategies import MovingAverageCrossover, RSIStrategy, MACDStrategy, BollingerBandsStrategy
 
-# Lade das dunkle Template für Plotly-Figuren
-load_figure_template("darkly")
+from data.nq_integration import NQDataFetcher
+
 
 # Initialisiere die Dash-App mit einem dunklen Theme
 app = dash.Dash(
@@ -36,6 +43,88 @@ app = dash.Dash(
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
     suppress_callback_exceptions=True
 )
+
+# 1. Neuen Import am Beginn der Datei hinzufügen (nach den bestehenden Imports)
+from data.nq_integration import NQDataFetcher
+
+# Zuerst die Verzeichnisse definieren
+data_dir = os.path.join(parent_dir, 'data')
+cache_dir = os.path.join(data_dir, 'cache')
+output_dir = os.path.join(parent_dir, 'output')
+os.makedirs(output_dir, exist_ok=True)
+
+# Dann die Fetcher initialisieren
+data_fetcher = DataFetcher(cache_dir=cache_dir)
+data_processor = DataProcessor()
+backtest_engine = BacktestEngine(initial_capital=50000.0)
+
+# Und jetzt den NQDataFetcher hinzufügen
+nq_data_fetcher = NQDataFetcher(cache_dir=cache_dir)
+
+# 3. Ändern Sie die Daten-Abruf-Callback-Funktion, um NQ Futures zu unterstützen
+@app.callback(
+    [
+        Output("stock-data-store", "data"),
+        Output("data-info", "children"),
+        Output("symbol-display", "children"),
+    ],
+    Input("fetch-data-button", "n_clicks"),
+    [
+        State("symbol-input", "value"),
+        State("active-timeframe-store", "data"),
+        State("range-dropdown", "value"),
+    ],
+    prevent_initial_call=True,
+)
+def fetch_stock_data(n_clicks, symbol, interval, range_val):
+    if not n_clicks or not symbol:
+        return None, "", ""
+
+    try:
+        # Spezialfall für NQ Futures
+        if symbol.upper() in ["NQ", "NQ=F", "NASDAQ", "NASDAQ100", "NQH24"]:
+            # Verwende den spezialisierten NQ Futures Data Fetcher
+            df = nq_data_fetcher.get_nq_futures_data(interval=interval, range_val=range_val)
+            symbol_display = "NASDAQ 100 Futures (NQ)"
+        else:
+            # Standardmäßig verwende den normalen Data Fetcher
+            df = data_fetcher.get_stock_data(symbol, interval, range_val)
+            symbol_display = f"{symbol.upper()}"
+
+        if df is None or df.empty:
+            return None, html.Div([
+                DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
+                "Keine Daten verfügbar"
+            ]), ""
+
+        # Indikatoren hinzufügen
+        df = data_processor.add_indicators(df)
+
+        # Daten in JSON konvertieren
+        df_json = df.reset_index().to_json(date_format='iso', orient='split')
+
+        # Info-Text erstellen
+        start_date = df.index.min().strftime('%d.%m.%Y')
+        end_date = df.index.max().strftime('%d.%m.%Y')
+        num_days = (df.index.max() - df.index.min()).days
+
+        info_text = html.Div([
+            DashIconify(icon="mdi:check-circle", width=18, color=colors['success'], className="me-2"),
+            f"{num_days} Tage ({start_date} - {end_date})"
+        ])
+
+        return df_json, info_text, symbol_display
+
+    except Exception as e:
+        return None, html.Div([
+            DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
+            f"Fehler: {str(e)}"
+        ]), ""
+
+# Lade das dunkle Template für Plotly-Figuren
+load_figure_template("darkly")
+
+
 
 # Initialisiere Komponenten
 data_dir = os.path.join(parent_dir, 'data')
@@ -352,7 +441,7 @@ header = dbc.Navbar(
 # Definiere Timeframe-Buttons
 timeframe_buttons = html.Div(
     [
-        html.Button("1m", id="tf-1m", className="timeframe-button"),
+        html.Button("1m", id="tf-1min", className="timeframe-button"),  # Änderung von "tf-1m" zu "tf-1min"
         html.Button("5m", id="tf-5m", className="timeframe-button"),
         html.Button("15m", id="tf-15m", className="timeframe-button"),
         html.Button("30m", id="tf-30m", className="timeframe-button"),
@@ -360,7 +449,7 @@ timeframe_buttons = html.Div(
         html.Button("4h", id="tf-4h", className="timeframe-button"),
         html.Button("1D", id="tf-1d", className="timeframe-button active"),
         html.Button("1W", id="tf-1w", className="timeframe-button"),
-        html.Button("1M", id="tf-1m", className="timeframe-button"),
+        html.Button("1M", id="tf-1mon", className="timeframe-button"),  # Änderung von "tf-1m" zu "tf-1mon"
     ],
     className="timeframe-buttons",
 )
@@ -1089,29 +1178,37 @@ def update_strategy_params(strategy_name):
 
 # Callback für Timeframe-Buttons
 @app.callback(
-    [Output("active-timeframe-store", "data")] + 
-    [Output(f"tf-{tf}", "className") for tf in ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1m"]],
-    [Input(f"tf-{tf}", "n_clicks") for tf in ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1m"]],
+    [Output("active-timeframe-store", "data")] +
+    [Output(f"tf-{tf}", "className") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
+    [Input(f"tf-{tf}", "n_clicks") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
     [State("active-timeframe-store", "data")],
     prevent_initial_call=True,
 )
-def update_timeframe(click_1m, click_5m, click_15m, click_30m, click_1h, click_4h, click_1d, click_1w, click_1mo, active_tf):
+def update_timeframe(click_1m, click_5m, click_15m, click_30m, click_1h, click_4h, click_1d, click_1w, click_1mo,
+                     active_tf):
     ctx = dash.callback_context
     if not ctx.triggered:
         # Standardmäßig 1d aktiv
-        return ["1d"] + ["timeframe-button" if tf != "1d" else "timeframe-button active" for tf in ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1m"]]
-    
+        return ["1d"] + ["timeframe-button" if tf != "1d" else "timeframe-button active" for tf in
+                         ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]]
+
     button_id = ctx.triggered[0]["prop_id"].split(".")[0]
     new_tf = button_id.split("-")[1]
-    
+
+    # Hier müssen Sie auch die Zeitrahmen anpassen wenn "1min" oder "1mon" verwendet wird
+    if new_tf == "1min":
+        new_tf = "1m"  # Für YahooFinance API
+    elif new_tf == "1mon":
+        new_tf = "1mo"  # Für YahooFinance API
+
     # Klassen für alle Buttons aktualisieren
     button_classes = []
-    for tf in ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1m"]:
+    for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]:
         if f"tf-{tf}" == button_id:
             button_classes.append("timeframe-button active")
         else:
             button_classes.append("timeframe-button")
-    
+
     return [new_tf] + button_classes
 
 # Callback für Daten abrufen
@@ -1248,7 +1345,6 @@ def toggle_indicator_buttons(sma_clicks, bb_clicks, rsi_clicks, macd_clicks,
 @app.callback(
     Output("price-chart", "figure"),
     [
-        Input("stock-data-store", "data"),
         Input("line-chart-button", "color"),
         Input("candlestick-chart-button", "color"),
         Input("ohlc-chart-button", "color"),

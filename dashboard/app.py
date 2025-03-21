@@ -142,7 +142,7 @@ def fetch_stock_data(n_clicks, symbol, interval, range_val):
         nan_count = df.isnull().sum().sum()
         if nan_count > 0:
             print(f"WARNUNG: {nan_count} NaN-Werte gefunden, werden gefüllt...")
-            df = df.fillna(method='ffill').fillna(method='bfill')
+            df.ffill(inplace=True)
 
         # Daten in JSON konvertieren
         # Daten in JSON konvertieren
@@ -154,14 +154,25 @@ def fetch_stock_data(n_clicks, symbol, interval, range_val):
         print("Index vor JSON-Konvertierung:", df.index[:3])
         print("Spalten vor JSON-Konvertierung:", df.columns.tolist())
 
-        # Reset index, damit der Index als Spalte mitgegeben wird
-        df_reset = df.reset_index()
-        print("Spalten nach reset_index:", df_reset.columns.tolist())
+        # Kopie erstellen, um das Original nicht zu verändern
+        df_copy = df.copy()
+
+        # Sicherstellen, dass wir eine Date-Spalte haben
+        if isinstance(df_copy.index, pd.DatetimeIndex):
+            # Reset index, damit der Index als Spalte mitgegeben wird
+            df_reset = df_copy.reset_index()
+            print("Spalten nach reset_index:", df_reset.columns.tolist())
+
+            # Sicherstellen dass 'Date' als datetime erhalten bleibt
+            df_reset['Datetime'] = pd.to_datetime(df_reset['Datetime'])
+        else:
+            df_reset = df_copy.reset_index()
+            print("Spalten nach reset_index:", df_reset.columns.tolist())
 
         # Daten in JSON konvertieren
-        df_json = df_reset.to_json(date_format='iso', orient='split')
+        df_json = df_reset.to_json(date_format='iso', orient='records')
 
-        # Info-Text erstellen
+        # Info-Text erstellen (weiterhin mit original df)
         start_date = df.index.min().strftime('%d.%m.%Y')
         end_date = df.index.max().strftime('%d.%m.%Y')
         num_days = (df.index.max() - df.index.min()).days
@@ -340,11 +351,540 @@ def update_price_chart(data_json, line_color, candlestick_color, ohlc_color,
           f"Line: {line_color == 'primary'}",
           f"Candlestick: {candlestick_color == 'primary'}",
           f"OHLC: {ohlc_color == 'primary'}")
+    print(f"Datentyp von data_json: {type(data_json)}")
+
+    # Daten aus JSON laden
+    try:
+        # Robust Daten laden je nach Format
+        if isinstance(data_json, list):
+            # Wenn data_json bereits eine Liste ist
+            df = pd.DataFrame(data_json)
+            print("Liste direkt in DataFrame konvertiert")
+        elif isinstance(data_json, dict):
+            # Wenn data_json bereits ein Dictionary ist
+            if 'data' in data_json and 'columns' in data_json:
+                # Split-Format Dictionary
+                df = pd.DataFrame(data_json['data'], columns=data_json['columns'])
+            elif 'index' in data_json:
+                # DataFrame-Format Dictionary
+                df = pd.DataFrame(data_json)
+            else:
+                # Anderes Dictionary-Format
+                df = pd.DataFrame([data_json])
+            print("Dictionary direkt in DataFrame konvertiert")
+        else:
+            # Annahme: Es ist ein JSON-String - versuche verschiedene Methoden
+            try:
+                # Versuche zuerst mit 'split' Orientation
+                df = pd.read_json(StringIO(data_json), orient='split')
+                print("JSON mit orient='split' erfolgreich geladen")
+            except:
+                try:
+                    # Versuche mit Records-Orientation
+                    df = pd.read_json(StringIO(data_json), orient='records')
+                    print("JSON mit orient='records' erfolgreich geladen")
+                except:
+                    try:
+                        # Letzter Versuch: parse als JSON und erstelle manuell
+                        import json
+                        data_obj = json.loads(data_json)
+                        if isinstance(data_obj, list):
+                            df = pd.DataFrame(data_obj)
+                        else:
+                            df = pd.DataFrame([data_obj])
+                        print("JSON manuell geparst und in DataFrame konvertiert")
+                    except Exception as e:
+                        print(f"Alle Versuche, JSON zu parsen, sind fehlgeschlagen: {e}")
+                        raise
+
+        # Debug-Ausgaben nach dem erfolgreichen Laden
+        print("DataFrame Info:")
+        print(f"Spalten: {df.columns.tolist()}")
+        print(f"Datentypen: {df.dtypes}")
+        print(f"Anzahl Zeilen: {len(df)}")
+
+        # Datumsspalte verarbeiten
+        if 'Datetime' in df.columns:
+            df['Datetime'] = pd.to_datetime(df['Datetime'])
+            df.set_index('Datetime', inplace=True)
+            print("Datetime als Index gesetzt")
+        elif 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            print("Date als Index gesetzt")
+        elif 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            print("date als Index gesetzt")
+        elif 'index' in df.columns and pd.api.types.is_datetime64_any_dtype(df['index']):
+            df.set_index('index', inplace=True)
+            print("index als Index gesetzt")
+        elif not isinstance(df.index, pd.DatetimeIndex):
+            print("Kein Datum-Index gefunden, versuche Index zu konvertieren")
+            try:
+                # Versuche, den bestehenden Index zu konvertieren
+                df.index = pd.to_datetime(df.index)
+            except:
+                print("Konnte Index nicht zu Datetime konvertieren")
+
+        # Stelle sicher, dass OHLC-Spalten vorhanden sind
+        ohlc_cols = ['Open', 'High', 'Low', 'Close']
+        for col in ohlc_cols:
+            if col not in df.columns:
+                # Versuche, Spalten mit Kleinbuchstaben zu finden
+                lower_col = col.lower()
+                if lower_col in df.columns:
+                    df[col] = df[lower_col]
+                    print(f"Spalte {lower_col} zu {col} kopiert")
+                else:
+                    print(f"WARNUNG: Erforderliche Spalte {col} fehlt")
+
+        # Stelle sicher, dass alle OHLC-Spalten numerisch sind
+        for col in ohlc_cols:
+            if col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
+                print(f"Konvertiere {col} zu numerisch")
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Auf NaN-Werte prüfen und behandeln
+        nan_count = df.isnull().sum().sum()
+        if nan_count > 0:
+            print(f"WARNUNG: {nan_count} NaN-Werte gefunden, werden gefüllt...")
+            df = df.ffill().bfill()
+    except Exception as e:
+        print(f"FEHLER beim Laden der Daten: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        # Leeren Chart zurückgeben
+        fig = go.Figure()
+        fig.update_layout(
+            **chart_style['layout'],
+            title="",
+            annotations=[
+                dict(
+                    text=f"Fehler beim Laden der Daten: {str(e)}",
+                    showarrow=False,
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    font=dict(size=16, color=colors['danger']),
+                )
+            ]
+        )
+        return fig
+
+    # Bestimme Chart-Typ
+    chart_type = "candlestick"  # Standard
+    if line_color == "primary":
+        chart_type = "line"
+    elif ohlc_color == "primary":
+        chart_type = "ohlc"
+
+    print(f"Ausgewählter Chart-Typ: {chart_type}")
+
+    # Bestimme aktive Indikatoren
+    show_sma = not sma_outline
+    show_bb = not bb_outline
+    show_rsi = not rsi_outline
+    show_macd = not macd_outline
+
+    # Bestimme Anzahl der Subplots
+    n_rows = 2  # Preis + Volumen als Standard
+    if show_rsi:
+        n_rows += 1
+    if show_macd:
+        n_rows += 1
+
+    # Erstelle Subplots
+    row_heights = [0.6]  # Preis-Chart
+    row_heights.extend([0.1] * (n_rows - 1))  # Weitere Subplots
+
+    fig = make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=row_heights,
+        subplot_titles=["", "Volumen"] + (["RSI"] if show_rsi else []) + (["MACD"] if show_macd else [])
+    )
+
+    # Debug vor dem Erstellen des Candlestick/Line/OHLC Charts
+    print(f"\nChartdaten für {chart_type} werden vorbereitet...")
+    if chart_type in ["candlestick", "ohlc"]:
+        print("OHLC-Daten für Chart:")
+        if all(col in df.columns for col in ['Open', 'High', 'Low', 'Close']):
+            print(df[['Open', 'High', 'Low', 'Close']].head(3))
+        else:
+            missing = [col for col in ['Open', 'High', 'Low', 'Close'] if col not in df.columns]
+            print(f"FEHLER: Folgende OHLC-Spalten fehlen: {missing}")
+
+    # Füge Preisdaten hinzu
+    try:
+        if chart_type == "line":
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['Close'],
+                    mode='lines',
+                    name='Schlusskurs',
+                    line=dict(color=colors['primary'], width=2),
+                    hovertemplate='%{x}<br>Schlusskurs: %{y:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+            print("Line-Chart erfolgreich erstellt")
+        elif chart_type == "candlestick":
+            print("Erstelle Candlestick-Chart...")
+            fig.add_trace(
+                go.Candlestick(
+                    x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='OHLC',
+                    increasing=chart_style['candlestick']['increasing'],
+                    decreasing=chart_style['candlestick']['decreasing'],
+                    hoverinfo='all',
+                    text=[
+                        f"Eröffnung: {row['Open']:.2f}<br>Hoch: {row['High']:.2f}<br>Tief: {row['Low']:.2f}<br>Schluss: {row['Close']:.2f}"
+                        for _, row in df.iterrows()]
+                ),
+                row=1, col=1
+            )
+            print("Candlestick-Chart erfolgreich erstellt")
+        elif chart_type == "ohlc":
+            fig.add_trace(
+                go.Ohlc(
+                    x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='OHLC',
+                    increasing=chart_style['candlestick']['increasing'],
+                    decreasing=chart_style['candlestick']['decreasing'],
+                    hovertemplate='%{x}<br>Eröffnung: %{open:.2f}<br>Hoch: %{high:.2f}<br>Tief: %{low:.2f}<br>Schluss: %{close:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+            print("OHLC-Chart erfolgreich erstellt")
+
+        # Füge Volumen hinzu
+        if 'Volume' in df.columns:
+            colors_volume = []
+            for i in range(len(df)):
+                if i > 0:
+                    if df['Close'].iloc[i] > df['Close'].iloc[i - 1]:
+                        colors_volume.append(colors['up'])
+                    else:
+                        colors_volume.append(colors['down'])
+                else:
+                    colors_volume.append(colors['up'])
+
+            fig.add_trace(
+                go.Bar(
+                    x=df.index,
+                    y=df['Volume'],
+                    name='Volumen',
+                    marker=dict(
+                        color=colors_volume
+                    ),
+                    hovertemplate='%{x}<br>Volumen: %{y}<extra></extra>',
+                ),
+                row=2, col=1
+            )
+            print("Volumen-Chart erfolgreich erstellt")
+
+        # Füge technische Indikatoren hinzu
+        current_row = 3
+
+        # Füge SMA hinzu
+        if show_sma:
+            for window, color in [(20, colors['success']), (50, colors['primary']), (200, colors['secondary'])]:
+                col_name = f'SMA_{window}'
+                if col_name in df.columns:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df.index,
+                            y=df[col_name],
+                            mode='lines',
+                            name=f'SMA {window}',
+                            line=dict(color=color, width=1),
+                            hovertemplate='%{x}<br>SMA {window}: %{y:.2f}<extra></extra>',
+                        ),
+                        row=1, col=1
+                    )
+                    print(f"SMA {window} erfolgreich hinzugefügt")
+
+        # Füge Bollinger Bands hinzu
+        if show_bb and all(col in df.columns for col in ['BB_Middle', 'BB_Upper', 'BB_Lower']):
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['BB_Middle'],
+                    mode='lines',
+                    name='BB Mitte',
+                    line=dict(color=colors['info'], width=1),
+                    hovertemplate='%{x}<br>BB Mitte: %{y:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['BB_Upper'],
+                    mode='lines',
+                    name='BB Oben',
+                    line=dict(color=colors['info'], width=1, dash='dash'),
+                    hovertemplate='%{x}<br>BB Oben: %{y:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['BB_Lower'],
+                    mode='lines',
+                    name='BB Unten',
+                    line=dict(color=colors['info'], width=1, dash='dash'),
+                    fill='tonexty',
+                    fillcolor=f'rgba(0, 188, 212, 0.1)',
+                    hovertemplate='%{x}<br>BB Unten: %{y:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+            print("Bollinger Bands erfolgreich hinzugefügt")
+
+        # Füge RSI hinzu
+        if show_rsi and 'RSI_14' in df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['RSI_14'],
+                    mode='lines',
+                    name='RSI 14',
+                    line=dict(color=colors['warning'], width=1),
+                    hovertemplate='%{x}<br>RSI: %{y:.2f}<extra></extra>',
+                ),
+                row=current_row, col=1
+            )
+
+            fig.add_hline(
+                y=70,
+                line=dict(color=colors['danger'], width=1, dash='dash'),
+                row=current_row,
+                col=1
+            )
+
+            fig.add_hline(
+                y=30,
+                line=dict(color=colors['success'], width=1, dash='dash'),
+                row=current_row,
+                col=1
+            )
+
+            current_row += 1
+            print("RSI erfolgreich hinzugefügt")
+
+        # Füge MACD hinzu
+        if show_macd and all(col in df.columns for col in ['MACD', 'MACD_Signal', 'MACD_Hist']):
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['MACD'],
+                    mode='lines',
+                    name='MACD',
+                    line=dict(color=colors['danger'], width=1),
+                    hovertemplate='%{x}<br>MACD: %{y:.2f}<extra></extra>',
+                ),
+                row=current_row, col=1
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['MACD_Signal'],
+                    mode='lines',
+                    name='Signal',
+                    line=dict(color=colors['secondary'], width=1),
+                    hovertemplate='%{x}<br>Signal: %{y:.2f}<extra></extra>',
+                ),
+                row=current_row, col=1
+            )
+
+            colors_hist = []
+            for val in df['MACD_Hist']:
+                if val > 0:
+                    colors_hist.append(colors['up'])
+                else:
+                    colors_hist.append(colors['down'])
+
+            fig.add_trace(
+                go.Bar(
+                    x=df.index,
+                    y=df['MACD_Hist'],
+                    name='Histogramm',
+                    marker=dict(
+                        color=colors_hist
+                    ),
+                    hovertemplate='%{x}<br>Diff: %{y:.2f}<extra></extra>',
+                ),
+                row=current_row, col=1
+            )
+
+            fig.add_hline(
+                y=0,
+                line=dict(color=colors['grid'], width=1),
+                row=current_row,
+                col=1
+            )
+
+            print("MACD erfolgreich hinzugefügt")
+
+        # Füge Backtest-Ergebnisse hinzu, wenn vorhanden
+        if backtest_results_json:
+            try:
+                # Deserialisiere Ergebnisse
+                if isinstance(backtest_results_json, str):
+                    backtest_results = pd.read_json(StringIO(backtest_results_json), orient='split')
+                else:
+                    backtest_results = pd.DataFrame(backtest_results_json)
+
+                # Handel mit backtest_results-Daten
+                if isinstance(backtest_results, dict) and 'trades' in backtest_results:
+                    trades = backtest_results['trades']
+
+                    # Markiere Einstiegspunkte
+                    entries_x = [trade['entry_date'] for trade in trades if 'entry_date' in trade]
+                    entries_y = [trade['entry_price'] for trade in trades if 'entry_price' in trade]
+
+                    if entries_x and entries_y:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=entries_x,
+                                y=entries_y,
+                                mode='markers',
+                                name='Einstieg',
+                                marker=dict(
+                                    symbol='triangle-up',
+                                    size=10,
+                                    color=colors['success'],
+                                    line=dict(
+                                        width=1,
+                                        color=colors['text']
+                                    )
+                                ),
+                                hovertemplate='%{x}<br>Einstieg: %{y:.2f}<extra></extra>',
+                            ),
+                            row=1, col=1
+                        )
+
+                    # Markiere Ausstiegspunkte
+                    exits_x = [trade['exit_date'] for trade in trades if 'exit_date' in trade]
+                    exits_y = [trade['exit_price'] for trade in trades if 'exit_price' in trade]
+
+                    if exits_x and exits_y:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=exits_x,
+                                y=exits_y,
+                                mode='markers',
+                                name='Ausstieg',
+                                marker=dict(
+                                    symbol='triangle-down',
+                                    size=10,
+                                    color=colors['danger'],
+                                    line=dict(
+                                        width=1,
+                                        color=colors['text']
+                                    )
+                                ),
+                                hovertemplate='%{x}<br>Ausstieg: %{y:.2f}<extra></extra>',
+                            ),
+                            row=1, col=1
+                        )
+
+                print("Backtest-Ergebnisse erfolgreich hinzugefügt")
+            except Exception as e:
+                print(f"Fehler beim Hinzufügen von Backtest-Ergebnissen: {e}")
+
+        layout_params = chart_style['layout'].copy()  # Kopiere das Style-Dictionary
+        if 'legend' in layout_params:
+            # Entferne das legend dictionary aus den layout_params
+            layout_params.pop('legend')
+
+        fig.update_layout(
+            **layout_params,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=10)
+            )
+        )
+        fig.update_yaxes(title_text="Preis", row=1, col=1)
+        fig.update_yaxes(title_text="Volumen", row=2, col=1)
+
+        if show_rsi:
+            fig.update_yaxes(title_text="RSI", row=3, col=1)
+
+        if show_macd:
+            fig.update_yaxes(title_text="MACD", row=n_rows, col=1)
+
+        fig.update_xaxes(rangebreaks=[
+            dict(bounds=["sat", "mon"]),  # Wochenenden ausblenden
+        ])
+
+        print("Layout aktualisiert")
+    except Exception as e:
+        print(f"FEHLER beim Erstellen des Charts: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        # Leeren Chart zurückgeben
+        fig = go.Figure()
+        fig.update_layout(
+            **chart_style['layout'],
+            title="",
+            annotations=[
+                dict(
+                    text=f"Fehler beim Erstellen des Charts: {str(e)}",
+                    showarrow=False,
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    font=dict(size=16, color=colors['danger']),
+                )
+            ]
+        )
+
+    return fig
+
+    # Debug
+    print("\n----- CHART UPDATE DEBUG -----")
+    print("Chart-Typen:",
+          f"Line: {line_color == 'primary'}",
+          f"Candlestick: {candlestick_color == 'primary'}",
+          f"OHLC: {ohlc_color == 'primary'}")
 
     # Daten aus JSON laden
     # Daten aus JSON laden
     try:
-        df = pd.read_json(StringIO(data_json), orient='split')
+        if isinstance(data_json, list):
+            # Wenn data_json eine Liste ist, verarbeite sie entsprechend
+            df = pd.DataFrame(data_json)
+        else:
+            # Normaler Fall
+            df = pd.read_json(StringIO(data_json), orient='split')
+
         print("Daten aus JSON erfolgreich geladen")
 
         # Prüfe, ob 'index' als Spalte existiert, bevor wir versuchen, den Index zu setzen

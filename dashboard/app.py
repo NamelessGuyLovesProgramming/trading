@@ -23,6 +23,7 @@ sys.path.append(parent_dir)
 
 import sys
 import os
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -33,8 +34,8 @@ from data.data_fetcher import DataFetcher
 from data.data_processor import DataProcessor
 from strategy.example_strategies import MovingAverageCrossover, RSIStrategy, MACDStrategy, BollingerBandsStrategy
 
+# Neuen Import für NQ Futures hinzufügen
 from data.nq_integration import NQDataFetcher
-
 
 # Initialisiere die Dash-App mit einem dunklen Theme
 app = dash.Dash(
@@ -43,9 +44,6 @@ app = dash.Dash(
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
     suppress_callback_exceptions=True
 )
-
-# 1. Neuen Import am Beginn der Datei hinzufügen (nach den bestehenden Imports)
-from data.nq_integration import NQDataFetcher
 
 # Zuerst die Verzeichnisse definieren
 data_dir = os.path.join(parent_dir, 'data')
@@ -61,7 +59,11 @@ backtest_engine = BacktestEngine(initial_capital=50000.0)
 # Und jetzt den NQDataFetcher hinzufügen
 nq_data_fetcher = NQDataFetcher(cache_dir=cache_dir)
 
-# 3. Ändern Sie die Daten-Abruf-Callback-Funktion, um NQ Futures zu unterstützen
+# Lade das dunkle Template für Plotly-Figuren
+load_figure_template("darkly")
+
+
+# Callback für Daten abrufen
 @app.callback(
     [
         Output("stock-data-store", "data"),
@@ -81,10 +83,33 @@ def fetch_stock_data(n_clicks, symbol, interval, range_val):
         return None, "", ""
 
     try:
-        # Spezialfall für NQ Futures
         if symbol.upper() in ["NQ", "NQ=F", "NASDAQ", "NASDAQ100", "NQH24"]:
+            print("\n----- NQ FETCH DEBUG -----")
+            print(f"Abrufen von NQ-Daten mit interval={interval}, range_val={range_val}")
+
             # Verwende den spezialisierten NQ Futures Data Fetcher
             df = nq_data_fetcher.get_nq_futures_data(interval=interval, range_val=range_val)
+
+            print("\n----- NQ DATA FORMAT -----")
+            print("Datentyp:", type(df))
+            print("Spalten:", df.columns.tolist())
+            print("Index-Typ:", type(df.index))
+            print("Index hat Zeitzone:",
+                  df.index.tzinfo is not None if hasattr(df.index, 'tzinfo') else 'Kein DatetimeIndex')
+            print("DataFrame Info:")
+            print(df.info())
+            print("Erste 3 Zeilen:")
+            print(df.head(3))
+
+            # Wichtig: Zeitzonenhandling
+            if hasattr(df.index, 'tzinfo') and df.index.tzinfo is not None:
+                print("Zeitzone wird vom Index entfernt")
+                df.index = df.index.tz_localize(None)
+            elif not isinstance(df.index, pd.DatetimeIndex):
+                print("Index wird in DatetimeIndex konvertiert (ohne Zeitzone)")
+                # Setze utc=True, um mit Zeitzonen-aware Daten umzugehen
+                df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+
             symbol_display = "NASDAQ 100 Futures (NQ)"
         else:
             # Standardmäßig verwende den normalen Data Fetcher
@@ -92,16 +117,49 @@ def fetch_stock_data(n_clicks, symbol, interval, range_val):
             symbol_display = f"{symbol.upper()}"
 
         if df is None or df.empty:
+            print("Keine Daten gefunden!")
             return None, html.Div([
                 DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
                 "Keine Daten verfügbar"
             ]), ""
 
+        # Debug vor dem Hinzufügen von Indikatoren
+        print("\n----- VOR INDIKATOREN -----")
+        print("Spalten:", df.columns.tolist())
+        print("Erste Zeile:", df.head(1))
+        print("-------------------------\n")
+
         # Indikatoren hinzufügen
         df = data_processor.add_indicators(df)
 
+        # Debug nach dem Hinzufügen von Indikatoren
+        print("\n----- NACH INDIKATOREN -----")
+        print("Spalten nach add_indicators:", df.columns.tolist())
+        print("Erste Zeile nach add_indicators:", df.head(1))
+        print("-------------------------\n")
+
+        # Auf NaN-Werte prüfen
+        nan_count = df.isnull().sum().sum()
+        if nan_count > 0:
+            print(f"WARNUNG: {nan_count} NaN-Werte gefunden, werden gefüllt...")
+            df = df.fillna(method='ffill').fillna(method='bfill')
+
         # Daten in JSON konvertieren
-        df_json = df.reset_index().to_json(date_format='iso', orient='split')
+        # Daten in JSON konvertieren
+        # Stelle sicher, dass der Index keine Zeitzone mehr hat
+        if df.index.tzinfo is not None:
+            df.index = df.index.tz_localize(None)
+
+        # Debug-Ausgabe vor der JSON-Konvertierung
+        print("Index vor JSON-Konvertierung:", df.index[:3])
+        print("Spalten vor JSON-Konvertierung:", df.columns.tolist())
+
+        # Reset index, damit der Index als Spalte mitgegeben wird
+        df_reset = df.reset_index()
+        print("Spalten nach reset_index:", df_reset.columns.tolist())
+
+        # Daten in JSON konvertieren
+        df_json = df_reset.to_json(date_format='iso', orient='split')
 
         # Info-Text erstellen
         start_date = df.index.min().strftime('%d.%m.%Y')
@@ -116,25 +174,358 @@ def fetch_stock_data(n_clicks, symbol, interval, range_val):
         return df_json, info_text, symbol_display
 
     except Exception as e:
+        print(f"FEHLER beim Datenabruf: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None, html.Div([
             DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
             f"Fehler: {str(e)}"
         ]), ""
 
-# Lade das dunkle Template für Plotly-Figuren
-load_figure_template("darkly")
+
+# Callback für Timeframe-Buttons
+@app.callback(
+    [Output("active-timeframe-store", "data")] +
+    [Output(f"tf-{tf}", "className") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
+    [Input(f"tf-{tf}", "n_clicks") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
+    [State("active-timeframe-store", "data")],
+    prevent_initial_call=True,
+)
+def update_timeframe(click_1m, click_5m, click_15m, click_30m, click_1h, click_4h, click_1d, click_1w, click_1mo,
+                     active_tf):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        # Standardmäßig 1d aktiv
+        return ["1d"] + ["timeframe-button" if tf != "1d" else "timeframe-button active" for tf in
+                         ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]]
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    new_tf = button_id.split("-")[1]
+
+    # Hier müssen Sie auch die Zeitrahmen anpassen wenn "1min" oder "1mon" verwendet wird
+    if new_tf == "1min":
+        new_tf = "1m"  # Für YahooFinance API
+    elif new_tf == "1mon":
+        new_tf = "1mo"  # Für YahooFinance API
+
+    # Klassen für alle Buttons aktualisieren
+    button_classes = []
+    for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]:
+        if f"tf-{tf}" == button_id:
+            button_classes.append("timeframe-button active")
+        else:
+            button_classes.append("timeframe-button")
+
+    return [new_tf] + button_classes
 
 
+# Callback für Chart-Typ-Buttons
+@app.callback(
+    [
+        Output("line-chart-button", "color"),
+        Output("line-chart-button", "outline"),
+        Output("candlestick-chart-button", "color"),
+        Output("candlestick-chart-button", "outline"),
+        Output("ohlc-chart-button", "color"),
+        Output("ohlc-chart-button", "outline"),
+    ],
+    [
+        Input("line-chart-button", "n_clicks"),
+        Input("candlestick-chart-button", "n_clicks"),
+        Input("ohlc-chart-button", "n_clicks"),
+    ],
+    prevent_initial_call=True,
+)
+def update_chart_type_buttons(line_clicks, candlestick_clicks, ohlc_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return "secondary", True, "primary", False, "secondary", True
 
-# Initialisiere Komponenten
-data_dir = os.path.join(parent_dir, 'data')
-cache_dir = os.path.join(data_dir, 'cache')
-output_dir = os.path.join(parent_dir, 'output')
-os.makedirs(output_dir, exist_ok=True)
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
-data_fetcher = DataFetcher(cache_dir=cache_dir)
-data_processor = DataProcessor()
-backtest_engine = BacktestEngine(initial_capital=50000.0)
+    if button_id == "line-chart-button":
+        return "primary", False, "secondary", True, "secondary", True
+    elif button_id == "candlestick-chart-button":
+        return "secondary", True, "primary", False, "secondary", True
+    elif button_id == "ohlc-chart-button":
+        return "secondary", True, "secondary", True, "primary", False
+
+    return "secondary", True, "primary", False, "secondary", True
+
+
+# Callback für Indikator-Buttons
+@app.callback(
+    [
+        Output("sma-button", "outline"),
+        Output("bb-button", "outline"),
+        Output("rsi-button", "outline"),
+        Output("macd-button", "outline"),
+    ],
+    [
+        Input("sma-button", "n_clicks"),
+        Input("bb-button", "n_clicks"),
+        Input("rsi-button", "n_clicks"),
+        Input("macd-button", "n_clicks"),
+    ],
+    [
+        State("sma-button", "outline"),
+        State("bb-button", "outline"),
+        State("rsi-button", "outline"),
+        State("macd-button", "outline"),
+    ],
+    prevent_initial_call=True,
+)
+def toggle_indicator_buttons(sma_clicks, bb_clicks, rsi_clicks, macd_clicks,
+                             sma_outline, bb_outline, rsi_outline, macd_outline):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return False, False, False, False
+
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if button_id == "sma-button":
+        return not sma_outline, bb_outline, rsi_outline, macd_outline
+    elif button_id == "bb-button":
+        return sma_outline, not bb_outline, rsi_outline, macd_outline
+    elif button_id == "rsi-button":
+        return sma_outline, bb_outline, not rsi_outline, macd_outline
+    elif button_id == "macd-button":
+        return sma_outline, bb_outline, rsi_outline, not macd_outline
+
+    return sma_outline, bb_outline, rsi_outline, macd_outline
+
+
+# Callback für Preischart
+@app.callback(
+    Output("price-chart", "figure"),
+    [
+        Input("stock-data-store", "data"),
+        Input("line-chart-button", "color"),
+        Input("candlestick-chart-button", "color"),
+        Input("ohlc-chart-button", "color"),
+        Input("sma-button", "outline"),
+        Input("bb-button", "outline"),
+        Input("rsi-button", "outline"),
+        Input("macd-button", "outline"),
+        Input("backtest-results-store", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def update_price_chart(data_json, line_color, candlestick_color, ohlc_color,
+                       sma_outline, bb_outline, rsi_outline, macd_outline,
+                       backtest_results_json):
+    if not data_json:
+        # Leeres Chart mit Hinweis zurückgeben
+        fig = go.Figure()
+        fig.update_layout(
+            **chart_style['layout'],
+            title="",
+            annotations=[
+                dict(
+                    text="Keine Daten verfügbar. Bitte Daten abrufen.",
+                    showarrow=False,
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    font=dict(size=16, color=colors['text']),
+                )
+            ]
+        )
+        return fig
+
+    # Debug
+    print("\n----- CHART UPDATE DEBUG -----")
+    print("Chart-Typen:",
+          f"Line: {line_color == 'primary'}",
+          f"Candlestick: {candlestick_color == 'primary'}",
+          f"OHLC: {ohlc_color == 'primary'}")
+
+    # Daten aus JSON laden
+    # Daten aus JSON laden
+    try:
+        df = pd.read_json(StringIO(data_json), orient='split')
+        print("Daten aus JSON erfolgreich geladen")
+
+        # Prüfe, ob 'index' als Spalte existiert, bevor wir versuchen, den Index zu setzen
+        if 'index' in df.columns:
+            df.set_index('index', inplace=True)
+        else:
+            print("Spalte 'index' nicht gefunden, Index bleibt unverändert")
+        print("DataFrame Info:")
+        print(f"Spalten: {df.columns.tolist()}")
+        print(f"Index-Typ: {type(df.index)}")
+        print(f"Datentypen: {df.dtypes}")
+        print(f"Anzahl Zeilen: {len(df)}")
+        print("Erste 3 Zeilen:")
+        print(df.head(3))
+
+        # Überprüfen, ob OHLC-Spalten vorhanden sind
+        ohlc_cols = ['Open', 'High', 'Low', 'Close']
+        for col in ohlc_cols:
+            print(f"Spalte {col} vorhanden: {col in df.columns}")
+            if col in df.columns:
+                print(f"Datentyp von {col}: {df[col].dtype}")
+                print(f"NaN-Werte in {col}: {df[col].isna().sum()}")
+
+        # Prüfen und ggf. korrigieren der OHLC-Daten
+        if not all(col in df.columns for col in ohlc_cols):
+            # Möglicherweise sind die Spalten falsch benannt - versuchen, sie zu finden
+            column_mapping = {}
+            lower_cols = [col.lower() for col in df.columns]
+            for required_col in ohlc_cols:
+                required_lower = required_col.lower()
+                if required_lower in lower_cols:
+                    actual_col = df.columns[lower_cols.index(required_lower)]
+                    column_mapping[actual_col] = required_col
+
+            if column_mapping:
+                print(f"Spaltennamen werden angepasst: {column_mapping}")
+                df.rename(columns=column_mapping, inplace=True)
+
+        # Stelle sicher, dass der Index ein DatetimeIndex ist
+        if not isinstance(df.index, pd.DatetimeIndex):
+            print("Index ist kein DatetimeIndex, wird konvertiert")
+            df.index = pd.to_datetime(df.index)
+
+        # Stelle sicher, dass OHLC-Spalten numerisch sind
+        for col in ohlc_cols:
+            if col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
+                print(f"Spalte {col} nicht numerisch, wird konvertiert")
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Auf NaN-Werte prüfen und behandeln
+        nan_count = df.isnull().sum().sum()
+        if nan_count > 0:
+            print(f"WARNUNG: {nan_count} NaN-Werte gefunden, werden gefüllt...")
+            df = df.ffill().bfill()
+    except Exception as e:
+        print(f"FEHLER beim Laden der JSON-Daten: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        # Leeren Chart zurückgeben
+        fig = go.Figure()
+        fig.update_layout(
+            **chart_style['layout'],
+            title="",
+            annotations=[
+                dict(
+                    text=f"Fehler beim Laden der Daten: {str(e)}",
+                    showarrow=False,
+                    xref="paper",
+                    yref="paper",
+                    x=0.5,
+                    y=0.5,
+                    font=dict(size=16, color=colors['danger']),
+                )
+            ]
+        )
+        return fig
+
+    # Bestimme Chart-Typ
+    chart_type = "candlestick"  # Standard
+    if line_color == "primary":
+        chart_type = "line"
+    elif ohlc_color == "primary":
+        chart_type = "ohlc"
+
+    print(f"Ausgewählter Chart-Typ: {chart_type}")
+
+    # Bestimme aktive Indikatoren
+    show_sma = not sma_outline
+    show_bb = not bb_outline
+    show_rsi = not rsi_outline
+    show_macd = not macd_outline
+
+    # Bestimme Anzahl der Subplots
+    n_rows = 2  # Preis + Volumen als Standard
+    if show_rsi:
+        n_rows += 1
+    if show_macd:
+        n_rows += 1
+
+    # Erstelle Subplots
+    row_heights = [0.6]  # Preis-Chart
+    row_heights.extend([0.1] * (n_rows - 1))  # Weitere Subplots
+
+    fig = make_subplots(
+        rows=n_rows,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=row_heights,
+        subplot_titles=["", "Volumen"] + (["RSI"] if show_rsi else []) + (["MACD"] if show_macd else [])
+    )
+
+    # Debug vor dem Erstellen des Candlestick/Line/OHLC Charts
+    print(f"\nChartdaten für {chart_type} werden vorbereitet...")
+    if chart_type in ["candlestick", "ohlc"]:
+        print("OHLC-Daten für Chart:")
+        if all(col in df.columns for col in ['Open', 'High', 'Low', 'Close']):
+            print(df[['Open', 'High', 'Low', 'Close']].head(3))
+        else:
+            missing = [col for col in ['Open', 'High', 'Low', 'Close'] if col not in df.columns]
+            print(f"FEHLER: Folgende OHLC-Spalten fehlen: {missing}")
+
+    # Füge Preisdaten hinzu
+    try:
+        if chart_type == "line":
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=df['Close'],
+                    mode='lines',
+                    name='Schlusskurs',
+                    line=dict(color=colors['primary'], width=2),
+                    hovertemplate='%{x}<br>Schlusskurs: %{y:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+            print("Line-Chart erfolgreich erstellt")
+        elif chart_type == "candlestick":
+            print("Erstelle Candlestick-Chart...")
+            fig.add_trace(
+                go.Candlestick(
+                    x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='OHLC',
+                    increasing=chart_style['candlestick']['increasing'],
+                    decreasing=chart_style['candlestick']['decreasing'],
+                    # hovertemplate entfernen oder durch hoverinfo und text ersetzen
+                    hoverinfo='all',
+                    text=[f"Eröffnung: {row['Open']:.2f}<br>Hoch: {row['High']:.2f}<br>Tief: {row['Low']:.2f}<br>Schluss: {row['Close']:.2f}"
+                         for _, row in df.iterrows()]
+                ),
+                row=1, col=1
+            )
+            print("Candlestick-Chart erfolgreich erstellt")
+        elif chart_type == "ohlc":
+            fig.add_trace(
+                go.Ohlc(
+                    x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'],
+                    name='OHLC',
+                    increasing=chart_style['candlestick']['increasing'],
+                    decreasing=chart_style['candlestick']['decreasing'],
+                    hovertemplate='%{x}<br>Eröffnung: %{open:.2f}<br>Hoch: %{high:.2f}<br>Tief: %{low:.2f}<br>Schluss: %{close:.2f}<extra></extra>',
+                ),
+                row=1, col=1
+            )
+            print("OHLC-Chart erfolgreich erstellt")
+    except Exception as e:
+        print(f"FEHLER beim Erstellen des Hauptcharts: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+    # Rest des Callbacks für Volumen und Indikatoren
+    # ... [vorhandener Code] ...
 
 # Definiere Strategien
 strategies = {
@@ -224,7 +615,7 @@ app.index_string = '''
                 margin: 0;
                 padding: 0;
             }
-            
+
             /* Scrollbar-Stile */
             ::-webkit-scrollbar {
                 width: 8px;
@@ -240,7 +631,7 @@ app.index_string = '''
             ::-webkit-scrollbar-thumb:hover {
                 background: ''' + colors['secondary'] + ''';
             }
-            
+
             /* Karten-Stile */
             .card {
                 border-radius: 4px;
@@ -256,7 +647,7 @@ app.index_string = '''
                 padding: 12px 16px;
                 font-weight: 600;
             }
-            
+
             /* Button-Stile */
             .btn {
                 border-radius: 4px;
@@ -271,7 +662,7 @@ app.index_string = '''
                 transform: translateY(0);
                 box-shadow: none;
             }
-            
+
             /* Input-Stile */
             .form-control, .form-select {
                 background-color: ''' + colors['card_background'] + ''';
@@ -283,7 +674,7 @@ app.index_string = '''
                 border-color: ''' + colors['primary'] + ''';
                 box-shadow: 0 0 0 0.25rem rgba(41, 98, 255, 0.25);
             }
-            
+
             /* Tabellen-Stile */
             .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
                 border-collapse: separate;
@@ -300,7 +691,7 @@ app.index_string = '''
                 padding: 10px 16px;
                 border-bottom: 1px solid ''' + colors['grid'] + ''';
             }
-            
+
             /* Tooltip-Stile */
             .tooltip {
                 background-color: ''' + colors['card_background'] + ''';
@@ -311,7 +702,7 @@ app.index_string = '''
                 font-size: 12px;
                 box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
             }
-            
+
             /* Chart-Container-Stile */
             .chart-container {
                 position: relative;
@@ -319,7 +710,7 @@ app.index_string = '''
                 overflow: hidden;
                 border: 1px solid ''' + colors['grid'] + ''';
             }
-            
+
             /* Toolbar-Stile */
             .chart-toolbar {
                 position: absolute;
@@ -333,7 +724,7 @@ app.index_string = '''
                 border-radius: 4px;
                 backdrop-filter: blur(5px);
             }
-            
+
             /* Timeframe-Buttons */
             .timeframe-buttons {
                 display: flex;
@@ -358,7 +749,7 @@ app.index_string = '''
                 color: white;
                 border-color: ''' + colors['primary'] + ''';
             }
-            
+
             /* Indikator-Badge */
             .indicator-badge {
                 display: inline-block;
@@ -370,7 +761,7 @@ app.index_string = '''
                 background-color: ''' + colors['grid'] + ''';
                 color: ''' + colors['text'] + ''';
             }
-            
+
             /* Animationen */
             @keyframes fadeIn {
                 from { opacity: 0; }
@@ -379,7 +770,7 @@ app.index_string = '''
             .fade-in {
                 animation: fadeIn 0.3s ease-in-out;
             }
-            
+
             /* Responsive Anpassungen */
             @media (max-width: 992px) {
                 .sidebar {
@@ -418,10 +809,18 @@ header = dbc.Navbar(
             dbc.Collapse(
                 dbc.Nav(
                     [
-                        dbc.NavItem(dbc.NavLink([DashIconify(icon="mdi:view-dashboard", width=18, className="me-2"), "Dashboard"], href="#", active=True)),
-                        dbc.NavItem(dbc.NavLink([DashIconify(icon="mdi:strategy", width=18, className="me-2"), "Strategien"], href="#")),
-                        dbc.NavItem(dbc.NavLink([DashIconify(icon="mdi:chart-timeline-variant", width=18, className="me-2"), "Backtesting"], href="#")),
-                        dbc.NavItem(dbc.NavLink([DashIconify(icon="mdi:cog", width=18, className="me-2"), "Einstellungen"], href="#")),
+                        dbc.NavItem(dbc.NavLink(
+                            [DashIconify(icon="mdi:view-dashboard", width=18, className="me-2"), "Dashboard"], href="#",
+                            active=True)),
+                        dbc.NavItem(
+                            dbc.NavLink([DashIconify(icon="mdi:strategy", width=18, className="me-2"), "Strategien"],
+                                        href="#")),
+                        dbc.NavItem(dbc.NavLink(
+                            [DashIconify(icon="mdi:chart-timeline-variant", width=18, className="me-2"), "Backtesting"],
+                            href="#")),
+                        dbc.NavItem(
+                            dbc.NavLink([DashIconify(icon="mdi:cog", width=18, className="me-2"), "Einstellungen"],
+                                        href="#")),
                     ],
                     className="ms-auto",
                     navbar=True,
@@ -480,10 +879,10 @@ sidebar = dbc.Card(
                         ], className="mb-3"),
                     ]),
                 ]),
-                
+
                 dbc.Label("Zeitrahmen", className="mb-1"),
                 timeframe_buttons,
-                
+
                 dbc.Row([
                     dbc.Col([
                         dbc.Label("Zeitraum", html_for="range-dropdown", className="mb-1"),
@@ -508,7 +907,7 @@ sidebar = dbc.Card(
                         ], className="mb-3"),
                     ]),
                 ]),
-                
+
                 dbc.Row([
                     dbc.Col([
                         dbc.Button(
@@ -519,7 +918,7 @@ sidebar = dbc.Card(
                         ),
                     ]),
                 ]),
-                
+
                 dbc.Row([
                     dbc.Col([
                         dbc.Spinner(
@@ -545,7 +944,7 @@ chart_card = dbc.Card(
                 html.H4("Preischart", className="card-title d-inline mb-0 me-2"),
                 html.Span(id="symbol-display", className="text-primary fw-bold"),
             ], className="d-inline-block"),
-            
+
             html.Div([
                 dbc.ButtonGroup([
                     dbc.Button(
@@ -572,7 +971,7 @@ chart_card = dbc.Card(
                         size="sm",
                     ),
                 ], className="me-2"),
-                
+
                 dbc.ButtonGroup([
                     dbc.Button(
                         "SMA",
@@ -606,7 +1005,7 @@ chart_card = dbc.Card(
                         size="sm",
                     ),
                 ]),
-                
+
                 dbc.Button(
                     DashIconify(icon="mdi:dots-vertical", width=18),
                     id="chart-options-button",
@@ -617,7 +1016,7 @@ chart_card = dbc.Card(
                 ),
             ], className="float-end d-flex")
         ]),
-        
+
         dbc.CardBody([
             html.Div([
                 dcc.Loading(
@@ -625,10 +1024,10 @@ chart_card = dbc.Card(
                         id="price-chart",
                         config={
                             'modeBarButtonsToAdd': [
-                                'drawline', 
-                                'drawopenpath', 
-                                'drawcircle', 
-                                'drawrect', 
+                                'drawline',
+                                'drawopenpath',
+                                'drawcircle',
+                                'drawrect',
                                 'eraseshape'
                             ],
                             'scrollZoom': True,
@@ -647,7 +1046,7 @@ chart_card = dbc.Card(
                     type="circle",
                     color=colors['primary'],
                 ),
-                
+
                 # Chart-Toolbar (TradingView-ähnlich)
                 html.Div([
                     dbc.Button(
@@ -691,13 +1090,14 @@ chart_card = dbc.Card(
                         className="p-1",
                     ),
                 ], className="chart-toolbar"),
-                
+
                 # Aktive Indikatoren-Anzeige
                 html.Div([
                     html.Span("SMA(20)", className="indicator-badge", style={"backgroundColor": colors['success']}),
                     html.Span("BB(20,2)", className="indicator-badge", style={"backgroundColor": colors['info']}),
                     html.Span("RSI(14)", className="indicator-badge", style={"backgroundColor": colors['warning']}),
-                    html.Span("MACD(12,26,9)", className="indicator-badge", style={"backgroundColor": colors['danger']}),
+                    html.Span("MACD(12,26,9)", className="indicator-badge",
+                              style={"backgroundColor": colors['danger']}),
                 ], className="mt-2 ms-2"),
             ], className="chart-container"),
         ], className="p-2"),
@@ -735,9 +1135,9 @@ strategy_card = dbc.Card(
                     ]),
                 ], width=12, className="mb-3"),
             ]),
-            
+
             html.Div(id="strategy-params", className="mb-3"),
-            
+
             dbc.Row([
                 dbc.Col([
                     dbc.Label("Startkapital (€)", html_for="capital-input", className="mb-1"),
@@ -769,7 +1169,7 @@ strategy_card = dbc.Card(
                     ]),
                 ], width=6),
             ], className="mb-3"),
-            
+
             dbc.Row([
                 dbc.Col([
                     dbc.Button(
@@ -830,7 +1230,7 @@ results_card = dbc.Card(
                     ], className="mb-3 border-0 shadow-sm", style={"backgroundColor": colors['card_background']}),
                 ], width=3),
             ]),
-            
+
             dbc.Row([
                 dbc.Col([
                     dcc.Loading(
@@ -927,10 +1327,10 @@ app.layout = html.Div(
         dcc.Store(id="stock-data-store"),
         dcc.Store(id="backtest-results-store"),
         dcc.Store(id="active-timeframe-store", data="1d"),  # Standardmäßig 1 Tag
-        
+
         # Header
         header,
-        
+
         # Hauptinhalt
         dbc.Container(
             [
@@ -946,7 +1346,7 @@ app.layout = html.Div(
                             md=12,
                             className="sidebar",
                         ),
-                        
+
                         # Rechte Spalte mit Charts und Ergebnissen
                         dbc.Col(
                             [
@@ -963,7 +1363,7 @@ app.layout = html.Div(
             fluid=True,
             className="mb-4",
         ),
-        
+
         # Footer
         dbc.Container(
             dbc.Row(
@@ -988,1102 +1388,3 @@ app.layout = html.Div(
     style={"backgroundColor": colors['background'], "minHeight": "100vh", "color": colors['text']},
     className="fade-in",
 )
-
-# Callback für Strategie-Parameter
-@app.callback(
-    Output("strategy-params", "children"),
-    Input("strategy-dropdown", "value"),
-)
-def update_strategy_params(strategy_name):
-    if not strategy_name or strategy_name not in strategies:
-        return []
-    
-    strategy = strategies[strategy_name]
-    params = strategy.get_parameters()
-    
-    param_inputs = []
-    
-    if strategy_name == "MA Crossover":
-        param_inputs = [
-            dbc.Row([
-                dbc.Col([
-                    dbc.Label("Kurzer MA", html_for="short-window-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-line-variant", width=18)),
-                        dbc.Input(
-                            id="short-window-input",
-                            type="number",
-                            value=params.get("short_window", 20),
-                            min=5,
-                            max=50,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=6),
-                dbc.Col([
-                    dbc.Label("Langer MA", html_for="long-window-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-line-variant", width=18)),
-                        dbc.Input(
-                            id="long-window-input",
-                            type="number",
-                            value=params.get("long_window", 50),
-                            min=20,
-                            max=200,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=6),
-            ]),
-        ]
-    elif strategy_name == "RSI Strategy":
-        param_inputs = [
-            dbc.Row([
-                dbc.Col([
-                    dbc.Label("RSI Periode", html_for="rsi-window-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-bell-curve", width=18)),
-                        dbc.Input(
-                            id="rsi-window-input",
-                            type="number",
-                            value=params.get("rsi_window", 14),
-                            min=5,
-                            max=30,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-                dbc.Col([
-                    dbc.Label("Überkauft", html_for="overbought-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:arrow-up-bold", width=18)),
-                        dbc.Input(
-                            id="overbought-input",
-                            type="number",
-                            value=params.get("overbought", 70),
-                            min=60,
-                            max=90,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-                dbc.Col([
-                    dbc.Label("Überverkauft", html_for="oversold-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:arrow-down-bold", width=18)),
-                        dbc.Input(
-                            id="oversold-input",
-                            type="number",
-                            value=params.get("oversold", 30),
-                            min=10,
-                            max=40,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-            ]),
-        ]
-    elif strategy_name == "MACD Strategy":
-        param_inputs = [
-            dbc.Row([
-                dbc.Col([
-                    dbc.Label("Schneller EMA", html_for="fast-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-line-variant", width=18)),
-                        dbc.Input(
-                            id="fast-input",
-                            type="number",
-                            value=params.get("fast", 12),
-                            min=5,
-                            max=30,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-                dbc.Col([
-                    dbc.Label("Langsamer EMA", html_for="slow-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-line-variant", width=18)),
-                        dbc.Input(
-                            id="slow-input",
-                            type="number",
-                            value=params.get("slow", 26),
-                            min=15,
-                            max=50,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-                dbc.Col([
-                    dbc.Label("Signal", html_for="signal-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-line-variant", width=18)),
-                        dbc.Input(
-                            id="signal-input",
-                            type="number",
-                            value=params.get("signal", 9),
-                            min=5,
-                            max=20,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=4),
-            ]),
-        ]
-    elif strategy_name == "Bollinger Bands Strategy":
-        param_inputs = [
-            dbc.Row([
-                dbc.Col([
-                    dbc.Label("Periode", html_for="bb-window-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:chart-bell-curve", width=18)),
-                        dbc.Input(
-                            id="bb-window-input",
-                            type="number",
-                            value=params.get("window", 20),
-                            min=10,
-                            max=50,
-                            step=1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=6),
-                dbc.Col([
-                    dbc.Label("Standardabweichungen", html_for="num-std-input", className="mb-1"),
-                    dbc.InputGroup([
-                        dbc.InputGroupText(DashIconify(icon="mdi:sigma", width=18)),
-                        dbc.Input(
-                            id="num-std-input",
-                            type="number",
-                            value=params.get("num_std", 2),
-                            min=1,
-                            max=3,
-                            step=0.1,
-                            className="border-start-0",
-                        ),
-                    ]),
-                ], width=6),
-            ]),
-        ]
-    
-    return param_inputs
-
-# Callback für Timeframe-Buttons
-@app.callback(
-    [Output("active-timeframe-store", "data")] +
-    [Output(f"tf-{tf}", "className") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
-    [Input(f"tf-{tf}", "n_clicks") for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]],
-    [State("active-timeframe-store", "data")],
-    prevent_initial_call=True,
-)
-def update_timeframe(click_1m, click_5m, click_15m, click_30m, click_1h, click_4h, click_1d, click_1w, click_1mo,
-                     active_tf):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        # Standardmäßig 1d aktiv
-        return ["1d"] + ["timeframe-button" if tf != "1d" else "timeframe-button active" for tf in
-                         ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]]
-
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    new_tf = button_id.split("-")[1]
-
-    # Hier müssen Sie auch die Zeitrahmen anpassen wenn "1min" oder "1mon" verwendet wird
-    if new_tf == "1min":
-        new_tf = "1m"  # Für YahooFinance API
-    elif new_tf == "1mon":
-        new_tf = "1mo"  # Für YahooFinance API
-
-    # Klassen für alle Buttons aktualisieren
-    button_classes = []
-    for tf in ["1min", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mon"]:
-        if f"tf-{tf}" == button_id:
-            button_classes.append("timeframe-button active")
-        else:
-            button_classes.append("timeframe-button")
-
-    return [new_tf] + button_classes
-
-# Callback für Daten abrufen
-@app.callback(
-    [
-        Output("stock-data-store", "data"),
-        Output("data-info", "children"),
-        Output("symbol-display", "children"),
-    ],
-    Input("fetch-data-button", "n_clicks"),
-    [
-        State("symbol-input", "value"),
-        State("active-timeframe-store", "data"),
-        State("range-dropdown", "value"),
-    ],
-    prevent_initial_call=True,
-)
-def fetch_stock_data(n_clicks, symbol, interval, range_val):
-    if not n_clicks or not symbol:
-        return None, "", ""
-    
-    try:
-        # Daten abrufen
-        df = data_fetcher.get_stock_data(symbol, interval, range_val)
-        
-        if df is None or df.empty:
-            return None, html.Div([
-                DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
-                "Keine Daten verfügbar"
-            ]), ""
-        
-        # Indikatoren hinzufügen
-        df = data_processor.add_indicators(df)
-        
-        # Daten in JSON konvertieren
-        df_json = df.reset_index().to_json(date_format='iso', orient='split')
-        
-        # Info-Text erstellen
-        start_date = df.index.min().strftime('%d.%m.%Y')
-        end_date = df.index.max().strftime('%d.%m.%Y')
-        num_days = (df.index.max() - df.index.min()).days
-        
-        info_text = html.Div([
-            DashIconify(icon="mdi:check-circle", width=18, color=colors['success'], className="me-2"),
-            f"{num_days} Tage ({start_date} - {end_date})"
-        ])
-        
-        # Symbol-Anzeige
-        symbol_display = f"{symbol.upper()}"
-        
-        return df_json, info_text, symbol_display
-    
-    except Exception as e:
-        return None, html.Div([
-            DashIconify(icon="mdi:alert", width=18, color=colors['danger'], className="me-2"),
-            f"Fehler: {str(e)}"
-        ]), ""
-
-# Callback für Chart-Typ-Buttons
-@app.callback(
-    [
-        Output("line-chart-button", "color"),
-        Output("line-chart-button", "outline"),
-        Output("candlestick-chart-button", "color"),
-        Output("candlestick-chart-button", "outline"),
-        Output("ohlc-chart-button", "color"),
-        Output("ohlc-chart-button", "outline"),
-    ],
-    [
-        Input("line-chart-button", "n_clicks"),
-        Input("candlestick-chart-button", "n_clicks"),
-        Input("ohlc-chart-button", "n_clicks"),
-    ],
-    prevent_initial_call=True,
-)
-def update_chart_type_buttons(line_clicks, candlestick_clicks, ohlc_clicks):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return "secondary", True, "primary", False, "secondary", True
-    
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    if button_id == "line-chart-button":
-        return "primary", False, "secondary", True, "secondary", True
-    elif button_id == "candlestick-chart-button":
-        return "secondary", True, "primary", False, "secondary", True
-    elif button_id == "ohlc-chart-button":
-        return "secondary", True, "secondary", True, "primary", False
-    
-    return "secondary", True, "primary", False, "secondary", True
-
-# Callback für Indikator-Buttons
-@app.callback(
-    [
-        Output("sma-button", "outline"),
-        Output("bb-button", "outline"),
-        Output("rsi-button", "outline"),
-        Output("macd-button", "outline"),
-    ],
-    [
-        Input("sma-button", "n_clicks"),
-        Input("bb-button", "n_clicks"),
-        Input("rsi-button", "n_clicks"),
-        Input("macd-button", "n_clicks"),
-    ],
-    [
-        State("sma-button", "outline"),
-        State("bb-button", "outline"),
-        State("rsi-button", "outline"),
-        State("macd-button", "outline"),
-    ],
-    prevent_initial_call=True,
-)
-def toggle_indicator_buttons(sma_clicks, bb_clicks, rsi_clicks, macd_clicks, 
-                            sma_outline, bb_outline, rsi_outline, macd_outline):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return False, False, False, False
-    
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    if button_id == "sma-button":
-        return not sma_outline, bb_outline, rsi_outline, macd_outline
-    elif button_id == "bb-button":
-        return sma_outline, not bb_outline, rsi_outline, macd_outline
-    elif button_id == "rsi-button":
-        return sma_outline, bb_outline, not rsi_outline, macd_outline
-    elif button_id == "macd-button":
-        return sma_outline, bb_outline, rsi_outline, not macd_outline
-    
-    return sma_outline, bb_outline, rsi_outline, macd_outline
-
-# Callback für Preischart
-@app.callback(
-    Output("price-chart", "figure"),
-    [
-        Input("line-chart-button", "color"),
-        Input("candlestick-chart-button", "color"),
-        Input("ohlc-chart-button", "color"),
-        Input("sma-button", "outline"),
-        Input("bb-button", "outline"),
-        Input("rsi-button", "outline"),
-        Input("macd-button", "outline"),
-        Input("backtest-results-store", "data"),
-    ],
-    prevent_initial_call=True,
-)
-def update_price_chart(data_json, line_color, candlestick_color, ohlc_color, 
-                       sma_outline, bb_outline, rsi_outline, macd_outline, 
-                       backtest_results_json):
-    if not data_json:
-        # Leeres Chart mit Hinweis zurückgeben
-        fig = go.Figure()
-        fig.update_layout(
-            **chart_style['layout'],
-            title="",
-            annotations=[
-                dict(
-                    text="Keine Daten verfügbar. Bitte Daten abrufen.",
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    font=dict(size=16, color=colors['text']),
-                )
-            ]
-        )
-        return fig
-    
-    # Daten aus JSON laden
-    df = pd.read_json(StringIO(data_json), orient='split')
-    df.set_index('index', inplace=True)
-    
-    # Bestimme Chart-Typ
-    chart_type = "candlestick"  # Standard
-    if line_color == "primary":
-        chart_type = "line"
-    elif ohlc_color == "primary":
-        chart_type = "ohlc"
-    
-    # Bestimme aktive Indikatoren
-    show_sma = not sma_outline
-    show_bb = not bb_outline
-    show_rsi = not rsi_outline
-    show_macd = not macd_outline
-    
-    # Bestimme Anzahl der Subplots
-    n_rows = 2  # Preis + Volumen als Standard
-    if show_rsi:
-        n_rows += 1
-    if show_macd:
-        n_rows += 1
-    
-    # Erstelle Subplots
-    row_heights = [0.6]  # Preis-Chart
-    row_heights.extend([0.1] * (n_rows - 1))  # Weitere Subplots
-    
-    fig = make_subplots(
-        rows=n_rows,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=row_heights,
-        subplot_titles=["", "Volumen"] + (["RSI"] if show_rsi else []) + (["MACD"] if show_macd else [])
-    )
-    
-    # Füge Preisdaten hinzu
-    if chart_type == "line":
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['Close'],
-                mode='lines',
-                name='Schlusskurs',
-                line=dict(color=colors['primary'], width=2),
-                hovertemplate='%{x}<br>Schlusskurs: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-    elif chart_type == "candlestick":
-        fig.add_trace(
-            go.Candlestick(
-                x=df.index,
-                open=df['Open'],
-                high=df['High'],
-                low=df['Low'],
-                close=df['Close'],
-                name='OHLC',
-                increasing=chart_style['candlestick']['increasing'],
-                decreasing=chart_style['candlestick']['decreasing'],
-                hovertemplate='%{x}<br>Eröffnung: %{open:.2f}<br>Hoch: %{high:.2f}<br>Tief: %{low:.2f}<br>Schluss: %{close:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-    elif chart_type == "ohlc":
-        fig.add_trace(
-            go.Ohlc(
-                x=df.index,
-                open=df['Open'],
-                high=df['High'],
-                low=df['Low'],
-                close=df['Close'],
-                name='OHLC',
-                increasing=chart_style['candlestick']['increasing'],
-                decreasing=chart_style['candlestick']['decreasing'],
-                hovertemplate='%{x}<br>Eröffnung: %{open:.2f}<br>Hoch: %{high:.2f}<br>Tief: %{low:.2f}<br>Schluss: %{close:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-    
-    # Füge SMA hinzu
-    if show_sma and 'SMA_20' in df.columns and 'SMA_50' in df.columns and 'SMA_200' in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['SMA_20'],
-                mode='lines',
-                name='SMA 20',
-                line=dict(color=colors['success'], width=1.5),
-                hovertemplate='%{x}<br>SMA 20: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['SMA_50'],
-                mode='lines',
-                name='SMA 50',
-                line=dict(color=colors['warning'], width=1.5),
-                hovertemplate='%{x}<br>SMA 50: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['SMA_200'],
-                mode='lines',
-                name='SMA 200',
-                line=dict(color=colors['danger'], width=1.5),
-                hovertemplate='%{x}<br>SMA 200: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-    
-    # Füge Bollinger Bands hinzu
-    if show_bb and 'BB_Upper' in df.columns and 'BB_Middle' in df.columns and 'BB_Lower' in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['BB_Upper'],
-                mode='lines',
-                name='BB Upper',
-                line=dict(color=colors['info'], width=1),
-                opacity=0.7,
-                hovertemplate='%{x}<br>BB Upper: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['BB_Middle'],
-                mode='lines',
-                name='BB Middle',
-                line=dict(color=colors['info'], width=1.5),
-                opacity=0.7,
-                hovertemplate='%{x}<br>BB Middle: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['BB_Lower'],
-                mode='lines',
-                name='BB Lower',
-                line=dict(color=colors['info'], width=1),
-                opacity=0.7,
-                fill='tonexty',
-                fillcolor='rgba(0, 188, 212, 0.1)',
-                hovertemplate='%{x}<br>BB Lower: %{y:.2f}<extra></extra>',
-            ),
-            row=1, col=1
-        )
-    
-    # Füge Volumen hinzu
-    colors_volume = np.where(df['Close'] >= df['Open'], colors['up'], colors['down'])
-    fig.add_trace(
-        go.Bar(
-            x=df.index,
-            y=df['Volume'],
-            name='Volumen',
-            marker=dict(
-                color=colors_volume,
-                line=dict(color=colors_volume, width=1),
-            ),
-            hovertemplate='%{x}<br>Volumen: %{y:,.0f}<extra></extra>',
-        ),
-        row=2, col=1
-    )
-    
-    # Füge RSI hinzu
-    current_row = 3
-    if show_rsi and 'RSI_14' in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['RSI_14'],
-                mode='lines',
-                name='RSI (14)',
-                line=dict(color=colors['warning'], width=1.5),
-                hovertemplate='%{x}<br>RSI: %{y:.2f}<extra></extra>',
-            ),
-            row=current_row, col=1
-        )
-        
-        # Füge Überkauft/Überverkauft-Linien hinzu
-        fig.add_trace(
-            go.Scatter(
-                x=[df.index[0], df.index[-1]],
-                y=[70, 70],
-                mode='lines',
-                name='Überkauft',
-                line=dict(color=colors['danger'], width=1, dash='dash'),
-                hoverinfo='skip',
-            ),
-            row=current_row, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[df.index[0], df.index[-1]],
-                y=[30, 30],
-                mode='lines',
-                name='Überverkauft',
-                line=dict(color=colors['success'], width=1, dash='dash'),
-                hoverinfo='skip',
-            ),
-            row=current_row, col=1
-        )
-        
-        # Füge Mittellinie hinzu
-        fig.add_trace(
-            go.Scatter(
-                x=[df.index[0], df.index[-1]],
-                y=[50, 50],
-                mode='lines',
-                name='Neutral',
-                line=dict(color=colors['secondary'], width=1, dash='dot'),
-                hoverinfo='skip',
-            ),
-            row=current_row, col=1
-        )
-        
-        current_row += 1
-    
-    # Füge MACD hinzu
-    if show_macd and 'MACD' in df.columns and 'MACD_Signal' in df.columns and 'MACD_Hist' in df.columns:
-        # MACD und Signal-Linie
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['MACD'],
-                mode='lines',
-                name='MACD',
-                line=dict(color=colors['primary'], width=1.5),
-                hovertemplate='%{x}<br>MACD: %{y:.4f}<extra></extra>',
-            ),
-            row=current_row, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df['MACD_Signal'],
-                mode='lines',
-                name='Signal',
-                line=dict(color=colors['danger'], width=1.5),
-                hovertemplate='%{x}<br>Signal: %{y:.4f}<extra></extra>',
-            ),
-            row=current_row, col=1
-        )
-        
-        # MACD-Histogramm
-        colors_hist = np.where(df['MACD_Hist'] >= 0, colors['up'], colors['down'])
-        fig.add_trace(
-            go.Bar(
-                x=df.index,
-                y=df['MACD_Hist'],
-                name='Histogramm',
-                marker=dict(
-                    color=colors_hist,
-                    line=dict(color=colors_hist, width=1),
-                ),
-                hovertemplate='%{x}<br>Histogramm: %{y:.4f}<extra></extra>',
-            ),
-            row=current_row, col=1
-        )
-    
-    # Füge Handelssignale hinzu, wenn Backtest-Ergebnisse vorhanden sind
-    if backtest_results_json:
-        try:
-            results = json.loads(backtest_results_json)
-            trades = results.get('trades', [])
-            
-            for trade in trades:
-                # Kaufsignale
-                if 'entry_date' in trade and 'entry_price' in trade:
-                    entry_date = pd.to_datetime(trade['entry_date'])
-                    entry_price = trade['entry_price']
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[entry_date],
-                            y=[entry_price],
-                            mode='markers',
-                            name='Kauf',
-                            marker=dict(
-                                symbol='triangle-up',
-                                size=12,
-                                color=colors['up'],
-                                line=dict(width=1, color=colors['text']),
-                            ),
-                            hovertemplate='%{x}<br>Kauf: %{y:.2f}<extra></extra>',
-                            showlegend=False,
-                        ),
-                        row=1, col=1
-                    )
-                
-                # Verkaufssignale
-                if 'exit_date' in trade and 'exit_price' in trade:
-                    exit_date = pd.to_datetime(trade['exit_date'])
-                    exit_price = trade['exit_price']
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[exit_date],
-                            y=[exit_price],
-                            mode='markers',
-                            name='Verkauf',
-                            marker=dict(
-                                symbol='triangle-down',
-                                size=12,
-                                color=colors['down'],
-                                line=dict(width=1, color=colors['text']),
-                            ),
-                            hovertemplate='%{x}<br>Verkauf: %{y:.2f}<extra></extra>',
-                            showlegend=False,
-                        ),
-                        row=1, col=1
-                    )
-                
-                # Stop-Loss und Take-Profit
-                if 'entry_date' in trade and 'stop_loss' in trade and trade['stop_loss'] is not None:
-                    entry_date = pd.to_datetime(trade['entry_date'])
-                    stop_loss = trade['stop_loss']
-                    
-                    # Finde den nächsten Datenpunkt im DataFrame
-                    closest_idx = df.index.get_indexer([entry_date], method='nearest')[0]
-                    
-                    # Bestimme das Ende des Trades oder verwende das Ende des Datensatzes
-                    exit_date = pd.to_datetime(trade.get('exit_date', df.index[-1]))
-                    
-                    # Erstelle eine Maske für den Zeitraum des Trades
-                    mask = (df.index >= entry_date) & (df.index <= exit_date)
-                    trade_period = df.index[mask]
-                    
-                    if len(trade_period) > 0:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=trade_period,
-                                y=[stop_loss] * len(trade_period),
-                                mode='lines',
-                                name='Stop-Loss',
-                                line=dict(color=colors['danger'], width=1, dash='dash'),
-                                hovertemplate='Stop-Loss: %{y:.2f}<extra></extra>',
-                                showlegend=False,
-                            ),
-                            row=1, col=1
-                        )
-                
-                if 'entry_date' in trade and 'take_profit' in trade and trade['take_profit'] is not None:
-                    entry_date = pd.to_datetime(trade['entry_date'])
-                    take_profit = trade['take_profit']
-                    
-                    # Finde den nächsten Datenpunkt im DataFrame
-                    closest_idx = df.index.get_indexer([entry_date], method='nearest')[0]
-                    
-                    # Bestimme das Ende des Trades oder verwende das Ende des Datensatzes
-                    exit_date = pd.to_datetime(trade.get('exit_date', df.index[-1]))
-                    
-                    # Erstelle eine Maske für den Zeitraum des Trades
-                    mask = (df.index >= entry_date) & (df.index <= exit_date)
-                    trade_period = df.index[mask]
-                    
-                    if len(trade_period) > 0:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=trade_period,
-                                y=[take_profit] * len(trade_period),
-                                mode='lines',
-                                name='Take-Profit',
-                                line=dict(color=colors['success'], width=1, dash='dash'),
-                                hovertemplate='Take-Profit: %{y:.2f}<extra></extra>',
-                                showlegend=False,
-                            ),
-                            row=1, col=1
-                        )
-        except Exception as e:
-            print(f"Fehler beim Hinzufügen von Handelssignalen: {str(e)}")
-    
-    # Update Layout
-    fig.update_layout(
-        **chart_style['layout'],
-        height=600,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(size=10),
-            bgcolor=colors['card_background'],
-            bordercolor=colors['grid'],
-        ),
-        dragmode='zoom',
-        hovermode='x unified',
-        margin=dict(l=10, r=50, t=10, b=10),
-        hoverlabel=dict(
-            bgcolor=colors['card_background'],
-            font_size=12,
-            font_family="-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
-        ),
-        selectdirection='h',
-    )
-    
-    # Update Achsen
-    fig.update_xaxes(
-        rangeslider_visible=False,
-        gridcolor=colors['grid'],
-        zerolinecolor=colors['grid'],
-        showgrid=True,
-        gridwidth=0.5,
-        showline=True,
-        linewidth=1,
-        linecolor=colors['grid'],
-        row=n_rows, col=1,  # Nur für die unterste Zeile
-        rangebreaks=[
-            dict(bounds=["sat", "mon"]),  # Wochenenden ausblenden
-        ],
-        tickformat='%d.%m.%y',  # Deutsches Datumsformat
-    )
-    
-    for i in range(1, n_rows + 1):
-        fig.update_yaxes(
-            gridcolor=colors['grid'],
-            zerolinecolor=colors['grid'],
-            showgrid=True,
-            gridwidth=0.5,
-            showline=True,
-            linewidth=1,
-            linecolor=colors['grid'],
-            row=i, col=1,
-            side='right',  # TradingView hat Y-Achse auf der rechten Seite
-            tickformat='.2f',  # Zwei Dezimalstellen
-        )
-    
-    # Spezielle Einstellungen für RSI
-    if show_rsi:
-        rsi_row = 3
-        fig.update_yaxes(
-            range=[0, 100],
-            row=rsi_row, col=1,
-        )
-    
-    return fig
-
-# Callback für Backtest durchführen
-@app.callback(
-    [
-        Output("backtest-results-store", "data"),
-        Output("total-return", "children"),
-        Output("total-return", "className"),
-        Output("win-rate", "children"),
-        Output("win-rate", "className"),
-        Output("num-trades", "children"),
-        Output("max-drawdown", "children"),
-        Output("max-drawdown", "className"),
-        Output("equity-chart", "figure"),
-        Output("trades-table", "data"),
-    ],
-    Input("run-backtest-button", "n_clicks"),
-    [
-        State("stock-data-store", "data"),
-        State("strategy-dropdown", "value"),
-        State("capital-input", "value"),
-        State("commission-input", "value"),
-        # MA Crossover Parameter
-        State("short-window-input", "value"),
-        State("long-window-input", "value"),
-        # RSI Parameter
-        State("rsi-window-input", "value"),
-        State("overbought-input", "value"),
-        State("oversold-input", "value"),
-        # MACD Parameter
-        State("fast-input", "value"),
-        State("slow-input", "value"),
-        State("signal-input", "value"),
-        # Bollinger Bands Parameter
-        State("bb-window-input", "value"),
-        State("num-std-input", "value"),
-    ],
-    prevent_initial_call=True,
-)
-def run_backtest(n_clicks, data_json, strategy_name, capital, commission,
-                short_window, long_window, rsi_window, overbought, oversold,
-                fast, slow, signal, bb_window, num_std):
-    if not n_clicks or not data_json or not strategy_name:
-        # Leere Ergebnisse zurückgeben
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            **chart_style['layout'],
-            title="",
-            annotations=[
-                dict(
-                    text="Führen Sie einen Backtest durch, um Ergebnisse zu sehen",
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    font=dict(size=16, color=colors['text']),
-                )
-            ]
-        )
-        return None, "N/A", "card-text text-center", "N/A", "card-text text-center", "N/A", "N/A", "card-text text-center", empty_fig, []
-    
-    try:
-        # Daten aus JSON laden
-        df = pd.read_json(StringIO(data_json), orient='split')
-        df.set_index('index', inplace=True)
-        
-        # Strategie konfigurieren
-        strategy = None
-        if strategy_name == "MA Crossover":
-            strategy = MovingAverageCrossover(short_window=short_window, long_window=long_window)
-        elif strategy_name == "RSI Strategy":
-            strategy = RSIStrategy(rsi_window=rsi_window, overbought=overbought, oversold=oversold)
-        elif strategy_name == "MACD Strategy":
-            strategy = MACDStrategy(fast=fast, slow=slow, signal=signal)
-        elif strategy_name == "Bollinger Bands Strategy":
-            strategy = BollingerBandsStrategy(window=bb_window, num_std=num_std)
-        
-        if not strategy:
-            raise ValueError(f"Unbekannte Strategie: {strategy_name}")
-        
-        # Backtest-Engine konfigurieren
-        backtest_engine.initial_capital = float(capital)
-        backtest_engine.commission_pct = float(commission) / 100.0
-        
-        # Backtest durchführen
-        results = backtest_engine.run(df, strategy)
-        
-        if not results:
-            raise ValueError("Backtest ergab keine Ergebnisse")
-        
-        # Ergebnisse extrahieren
-        metrics = results['metrics']
-        equity_curve = results['equity_curve']
-        trades = results['trades']
-        
-        # Metriken formatieren
-        total_return_pct = metrics['total_return'] * 100
-        total_return_text = f"{total_return_pct:.2f}%"
-        total_return_class = "card-text text-center text-success" if total_return_pct >= 0 else "card-text text-center text-danger"
-        
-        win_rate_pct = metrics['win_rate'] * 100
-        win_rate_text = f"{win_rate_pct:.2f}%"
-        win_rate_class = "card-text text-center text-success" if win_rate_pct >= 50 else "card-text text-center text-danger"
-        
-        num_trades_text = str(metrics['num_trades'])
-        
-        max_drawdown_pct = metrics['max_drawdown'] * 100
-        max_drawdown_text = f"{max_drawdown_pct:.2f}%"
-        max_drawdown_class = "card-text text-center text-danger"
-        
-        # Equity-Kurve erstellen
-        equity_fig = go.Figure()
-        
-        # Füge Equity-Kurve hinzu
-        equity_fig.add_trace(
-            go.Scatter(
-                x=equity_curve.index,
-                y=equity_curve['equity'],
-                mode='lines',
-                name='Kapital',
-                line=dict(color=colors['primary'], width=2),
-                fill='tozeroy',
-                fillcolor=f"rgba({int(colors['primary'][1:3], 16)}, {int(colors['primary'][3:5], 16)}, {int(colors['primary'][5:7], 16)}, 0.1)",
-                hovertemplate='%{x}<br>Kapital: %{y:,.2f} €<extra></extra>',
-            )
-        )
-        
-        # Füge Drawdown-Kurve hinzu
-        equity_fig.add_trace(
-            go.Scatter(
-                x=equity_curve.index,
-                y=equity_curve['drawdown'] * -1,  # Negativ für bessere Visualisierung
-                mode='lines',
-                name='Drawdown',
-                line=dict(color=colors['danger'], width=1),
-                fill='tozeroy',
-                fillcolor=f"rgba({int(colors['danger'][1:3], 16)}, {int(colors['danger'][3:5], 16)}, {int(colors['danger'][5:7], 16)}, 0.1)",
-                visible='legendonly',  # Standardmäßig ausgeblendet
-                hovertemplate='%{x}<br>Drawdown: %{y:,.2f}%<extra></extra>',
-            )
-        )
-        
-        # Füge Kaufsignale hinzu
-        buy_dates = []
-        buy_equities = []
-        for trade in trades:
-            if 'entry_date' in trade:
-                entry_date = pd.to_datetime(trade['entry_date'])
-                if entry_date in equity_curve.index:
-                    buy_dates.append(entry_date)
-                    buy_equities.append(equity_curve.loc[entry_date, 'equity'])
-        
-        if buy_dates:
-            equity_fig.add_trace(
-                go.Scatter(
-                    x=buy_dates,
-                    y=buy_equities,
-                    mode='markers',
-                    name='Kauf',
-                    marker=dict(
-                        symbol='triangle-up',
-                        size=10,
-                        color=colors['up'],
-                        line=dict(width=1, color=colors['text']),
-                    ),
-                    hovertemplate='%{x}<br>Kauf: %{y:,.2f} €<extra></extra>',
-                )
-            )
-        
-        # Füge Verkaufssignale hinzu
-        sell_dates = []
-        sell_equities = []
-        for trade in trades:
-            if 'exit_date' in trade:
-                exit_date = pd.to_datetime(trade['exit_date'])
-                if exit_date in equity_curve.index:
-                    sell_dates.append(exit_date)
-                    sell_equities.append(equity_curve.loc[exit_date, 'equity'])
-        
-        if sell_dates:
-            equity_fig.add_trace(
-                go.Scatter(
-                    x=sell_dates,
-                    y=sell_equities,
-                    mode='markers',
-                    name='Verkauf',
-                    marker=dict(
-                        symbol='triangle-down',
-                        size=10,
-                        color=colors['down'],
-                        line=dict(width=1, color=colors['text']),
-                    ),
-                    hovertemplate='%{x}<br>Verkauf: %{y:,.2f} €<extra></extra>',
-                )
-            )
-        
-        equity_fig.update_layout(
-            **chart_style['layout'],
-            title="",
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
-                bgcolor=colors['card_background'],
-                bordercolor=colors['grid'],
-            ),
-            margin=dict(l=10, r=50, t=10, b=10),
-            hoverlabel=dict(
-                bgcolor=colors['card_background'],
-                font_size=12,
-                font_family="-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
-            ),
-        )
-        
-        # Trades-Tabelle erstellen
-        trades_data = []
-        for i, trade in enumerate(trades):
-            trade_data = {
-                "index": i + 1,
-                "entry_date": pd.to_datetime(trade['entry_date']).strftime('%d.%m.%Y'),
-                "entry_price": f"{trade['entry_price']:.2f}",
-                "exit_date": pd.to_datetime(trade['exit_date']).strftime('%d.%m.%Y') if 'exit_date' in trade else "Offen",
-                "exit_price": f"{trade['exit_price']:.2f}" if 'exit_price' in trade else "N/A",
-                "type": "Long" if trade['type'] == 'long' else "Short",
-                "shares": f"{trade['shares']:.0f}",
-                "pnl": f"{trade['pnl']:.2f}",
-                "return": f"{trade['return'] * 100:.2f}%",
-                "stop_loss": f"{trade['stop_loss']:.2f}" if 'stop_loss' in trade and trade['stop_loss'] is not None else "N/A",
-                "take_profit": f"{trade['take_profit']:.2f}" if 'take_profit' in trade and trade['take_profit'] is not None else "N/A",
-            }
-            trades_data.append(trade_data)
-        
-        # Ergebnisse als JSON zurückgeben
-        results_json = json.dumps(results, default=str)
-        
-        return results_json, total_return_text, total_return_class, win_rate_text, win_rate_class, num_trades_text, max_drawdown_text, max_drawdown_class, equity_fig, trades_data
-    
-    except Exception as e:
-        print(f"Fehler beim Backtest: {str(e)}")
-        
-        # Leere Ergebnisse zurückgeben
-        empty_fig = go.Figure()
-        empty_fig.update_layout(
-            **chart_style['layout'],
-            title="",
-            annotations=[
-                dict(
-                    text=f"Fehler beim Backtest: {str(e)}",
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                    font=dict(size=16, color=colors['danger']),
-                )
-            ]
-        )
-        return None, "Fehler", "card-text text-center text-danger", "Fehler", "card-text text-center text-danger", "Fehler", "Fehler", "card-text text-center text-danger", empty_fig, []

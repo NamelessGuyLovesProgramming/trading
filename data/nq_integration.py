@@ -163,6 +163,42 @@ class NQDataFetcher:
                     df.to_csv(cache_file)
 
                 print(f"Erfolgreich NQ Futures Daten von Twelve Data abgerufen, {len(df)} Datenpunkte")
+
+                print("\n----- NQ DATA DEBUG -----")
+                print("Datentyp:", type(df))
+                print("Spalten:", df.columns.tolist())
+                print("Index-Typ:", type(df.index))
+                print("Erste Zeilen:")
+                print(df.head(3))
+                print("Datentypen der Spalten:")
+                print(df.dtypes)
+                print("-------------------------\n")
+
+                # Nach dem Abrufen der NQ-Daten, vor der Rückgabe
+                # Standardisiere Spaltennamen (erster Buchstabe groß)
+                column_mapping = {
+                    'open': 'Open',
+                    'high': 'High',
+                    'low': 'Low',
+                    'close': 'Close',
+                    'volume': 'Volume'
+                }
+
+                # Benenne Spalten um, falls nötig
+                for old_col, new_col in column_mapping.items():
+                    if old_col in df.columns:
+                        df.rename(columns={old_col: new_col}, inplace=True)
+
+                    # Nach dem Abrufen der NQ-Daten, vor der Rückgabe
+                    # Stelle sicher, dass der Index ein DatetimeIndex ist
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+
+                    # Stelle sicher, dass die Zeitzone korrekt ist (falls nötig)
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+
+
                 return df
             else:
                 print(f"Fehler bei Twelve Data-Anfrage: {data.get('message', 'Unbekannter Fehler')}")

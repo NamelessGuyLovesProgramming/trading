@@ -18,7 +18,24 @@ import yfinance as yf
 try:
     sys.path.append('/opt/.manus/.sandbox-runtime')
     from data_api import ApiClient
-    API_AVAILABLE = True
+    
+    # Teste, ob die API tatsächlich funktioniert
+    try:
+        client = ApiClient()
+        test_response = client.call_api('YahooFinance/get_stock_chart', query={
+            'symbol': 'AAPL',
+            'interval': '1d',
+            'range': '5d'
+        })
+        if test_response and 'chart' in test_response:
+            API_AVAILABLE = True
+            print("Manus API erfolgreich initialisiert")
+        else:
+            API_AVAILABLE = False
+            print("Manus API verfügbar, aber Testanfrage fehlgeschlagen. Verwende yfinance als Fallback")
+    except Exception as e:
+        API_AVAILABLE = False
+        print(f"Manus API-Test fehlgeschlagen: {e}. Verwende yfinance als Fallback")
 except ImportError:
     API_AVAILABLE = False
     print("Manus API nicht verfügbar, verwende yfinance als Fallback")
@@ -133,7 +150,8 @@ class DataFetcher:
                 }
                 
                 # Konvertiere Zeitstempel zu Datetime
-                index = pd.to_datetime([datetime.fromtimestamp(ts) for ts in timestamps], unit='s')
+                # Behebe das tzinfo-Problem durch explizite Konvertierung ohne Zeitzoneninformation
+                index = pd.to_datetime([datetime.fromtimestamp(ts).replace(tzinfo=None) for ts in timestamps])
                 
                 # Erstelle DataFrame
                 df = pd.DataFrame(data, index=index)

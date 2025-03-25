@@ -194,9 +194,12 @@ class NQDataFetcher:
                 if not isinstance(df.index, pd.DatetimeIndex):
                     df.index = pd.to_datetime(df.index)
 
-                    # Stelle sicher, dass die Zeitzone korrekt ist (falls nötig)
+                # Stelle sicher, dass die Zeitzone korrekt ist (falls nötig)
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
+                
+                # Stelle sicher, dass keine tzinfo-Attribute vorhanden sind
+                df.index = pd.DatetimeIndex([dt.replace(tzinfo=None) if hasattr(dt, 'tzinfo') else dt for dt in df.index])
 
 
                 return df

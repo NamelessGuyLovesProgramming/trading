@@ -12,15 +12,19 @@ class Strategy(ABC):
     Abstrakte Basisklasse für Handelsstrategien
     """
     
-    def __init__(self, name="Basisstrategie"):
+    def __init__(self, name="Basisstrategie", stop_loss_pct=5, take_profit_pct=10):
         """
         Initialisiert die Strategie
         
         Args:
             name (str): Name der Strategie
+            stop_loss_pct (float): Stop Loss in Prozent vom Einstiegspreis
+            take_profit_pct (float): Take Profit in Prozent vom Einstiegspreis
         """
         self.name = name
         self.parameters = {}
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
         
     @abstractmethod
     def generate_signals(self, data):
@@ -46,8 +50,8 @@ class Strategy(ABC):
         Returns:
             float: Stop-Loss-Preis
         """
-        # Standardimplementierung: 5% unter dem Einstiegspreis
-        return data['Close'].iloc[index] * 0.95
+        # Verwendet den konfigurierbaren Stop-Loss-Prozentsatz
+        return data['Close'].iloc[index] * (1 - self.stop_loss_pct / 100)
     
     def calculate_take_profit(self, data, index):
         """
@@ -60,8 +64,8 @@ class Strategy(ABC):
         Returns:
             float: Take-Profit-Preis
         """
-        # Standardimplementierung: 10% über dem Einstiegspreis
-        return data['Close'].iloc[index] * 1.10
+        # Verwendet den konfigurierbaren Take-Profit-Prozentsatz
+        return data['Close'].iloc[index] * (1 + self.take_profit_pct / 100)
     
     def set_parameters(self, **kwargs):
         """

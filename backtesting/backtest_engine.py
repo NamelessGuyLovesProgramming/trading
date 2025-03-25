@@ -250,6 +250,41 @@ class BacktestEngine:
             avg_hold_time = 0
         
         # Erstelle Metriken-Dictionary
+        # Berechne zusätzliche Metriken
+        total_profit = sum(t['profit'] for t in winning_trades) if winning_trades else 0
+        total_loss = sum(t['profit'] for t in losing_trades) if losing_trades else 0
+        net_profit = total_profit + total_loss
+        
+        # Berechne Risiko-Rendite-Verhältnis
+        risk_reward_ratio = abs(avg_profit / avg_loss) if avg_loss != 0 else float('inf')
+        
+        # Berechne maximale Gewinn- und Verlustserie
+        if self.trades:
+            profit_series = []
+            current_series = 0
+            for trade in self.trades:
+                if trade['profit'] > 0:
+                    current_series += 1
+                else:
+                    profit_series.append(current_series)
+                    current_series = 0
+            profit_series.append(current_series)
+            max_win_streak = max(profit_series) if profit_series else 0
+            
+            loss_series = []
+            current_series = 0
+            for trade in self.trades:
+                if trade['profit'] <= 0:
+                    current_series += 1
+                else:
+                    loss_series.append(current_series)
+                    current_series = 0
+            loss_series.append(current_series)
+            max_loss_streak = max(loss_series) if loss_series else 0
+        else:
+            max_win_streak = 0
+            max_loss_streak = 0
+        
         metrics = {
             'total_return': total_return,
             'annual_return': annual_return,
@@ -261,7 +296,15 @@ class BacktestEngine:
             'avg_loss': avg_loss,
             'profit_factor': profit_factor,
             'avg_hold_time': avg_hold_time,
-            'final_capital': equity_curve.iloc[-1]
+            'final_capital': equity_curve.iloc[-1],
+            'net_profit': net_profit,
+            'total_profit': total_profit,
+            'total_loss': total_loss,
+            'risk_reward_ratio': risk_reward_ratio,
+            'max_win_streak': max_win_streak,
+            'max_loss_streak': max_loss_streak,
+            'stop_loss_exits': sum(1 for t in self.trades if t.get('exit_reason') == 'stop_loss'),
+            'take_profit_exits': sum(1 for t in self.trades if t.get('exit_reason') == 'take_profit')
         }
         
         return metrics
@@ -281,8 +324,8 @@ class BacktestEngine:
         trades = results['trades']
         metrics = results['metrics']
         
-        # Erstelle Figure
-        fig = plt.figure(figsize=(15, 10))
+        # Erstelle Figure mit mehr Platz für detaillierte Darstellung
+        fig = plt.figure(figsize=(18, 14))
         
         # Plot Equity-Kurve
         ax1 = plt.subplot2grid((4, 1), (0, 0), rowspan=1)
@@ -293,7 +336,15 @@ class BacktestEngine:
         
         # Plot Preisdaten und Trades
         ax2 = plt.subplot2grid((4, 1), (1, 0), rowspan=2)
-        ax2.plot(data['Close'], label='Schlusskurs')
+        ax2.plot(data['Close'], label='Schlusskurs', linewidth=1.5)
+        
+        # Füge Volumen als Balken am unteren Rand hinzu
+        if 'Volume' in data.columns:
+            volume_axis = ax2.twinx()
+            volume_axis.set_ylim(0, data['Volume'].max() * 3)
+            volume_axis.bar(data.index, data['Volume'], color='lightgray', alpha=0.3, width=1)
+            volume_axis.set_ylabel('Volumen')
+            volume_axis.grid(False)
         
         # Markiere Trades
         for trade in trades:
@@ -347,17 +398,29 @@ class BacktestEngine:
         ax3.set_title('Drawdown')
         ax3.grid(True)
         
-        # Füge Metriken hinzu
+        # Füge erweiterte Metriken hinzu
         metrics_text = f"""
         Gesamtrendite: {metrics['total_return']:.2%}
         Jährliche Rendite: {metrics['annual_return']:.2%}
         Max. Drawdown: {metrics['max_drawdown']:.2%}
         Sharpe Ratio: {metrics['sharpe_ratio']:.2f}
+        
         Anzahl Trades: {metrics['num_trades']}
         Gewinnrate: {metrics['win_rate']:.2%}
+        Nettogewinn: {metrics['net_profit']:.2f}
+        Gesamtgewinn: {metrics['total_profit']:.2f}
+        Gesamtverlust: {metrics['total_loss']:.2f}
+        
         Durchschn. Gewinn: {metrics['avg_profit']:.2f}
         Durchschn. Verlust: {metrics['avg_loss']:.2f}
         Profit Factor: {metrics['profit_factor']:.2f}
+        Risiko-Rendite-Verhältnis: {metrics['risk_reward_ratio']:.2f}
+        
+        Längste Gewinnserie: {metrics['max_win_streak']}
+        Längste Verlustserie: {metrics['max_loss_streak']}
+        Stop-Loss-Auslösungen: {metrics['stop_loss_exits']}
+        Take-Profit-Auslösungen: {metrics['take_profit_exits']}
+        
         Durchschn. Haltedauer: {metrics['avg_hold_time']:.1f} Tage
         Endkapital: {metrics['final_capital']:.2f}
         """

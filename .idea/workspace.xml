@@ -4,11 +4,19 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="15b21879-67d6-4d25-bd17-f6d551b193a6" name="Changes" comment="" />
+    <list default="true" id="15b21879-67d6-4d25-bd17-f6d551b193a6" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dashboard/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/dashboard/app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dashboard/chart_callbacks.py" beforeDir="false" afterPath="$PROJECT_DIR$/dashboard/chart_callbacks.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dashboard/chart_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/dashboard/chart_utils.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
@@ -22,7 +30,7 @@
   "keyToString": {
     "RunOnceActivity.OpenProjectViewOnStart": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
-    "last_opened_file_path": "C:/Users/Buro/pythonProject/compressed_tradingTemp"
+    "last_opened_file_path": "C:/Users/Buro/pythonProject/running_project"
   }
 }]]></component>
   <component name="RunManager">

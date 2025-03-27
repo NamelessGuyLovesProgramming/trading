@@ -66,21 +66,22 @@ chart_style = {
     }
 }
 
-def generate_mock_data(symbol, timeframe, days_back=180):
+def generate_mock_data(symbol, timeframe, days_back=180, data_source="yahoo"):
     """
     Generiert Mock-Daten für den Chart basierend auf Symbol und Zeitrahmen.
     
     Args:
         symbol (str): Das Symbol des Assets (z.B. "AAPL")
-        timeframe (str): Der Zeitrahmen ("1m", "2m", "5m", "15m", "30m", "60m", "1d", "1wk", "1mo")
+        timeframe (str): Der Zeitrahmen ("1m", "2m", "3m", "5m", "15m", "30m", "60m", "1h", "4h", "1d", "1wk", "1mo")
         days_back (int): Anzahl der Tage in der Vergangenheit
+        data_source (str): Die zu verwendende Datenquelle ("yahoo", "alphavantage", "nq")
         
     Returns:
         pd.DataFrame: DataFrame mit OHLCV-Daten
     """
     try:
-        # Prüfe, ob es sich um NQ handelt
-        if symbol == "NQ=F" or symbol == "NQ":
+        # Prüfe, ob es sich um NQ handelt und die NQ-Datenquelle verwendet werden soll
+        if (symbol == "NQ=F" or symbol == "NQ") and data_source == "nq":
             logger.info(f"Rufe NQ-Daten für Zeitrahmen {timeframe} ab")
             nq_fetcher = NQDataFetcher()
             
@@ -90,6 +91,9 @@ def generate_mock_data(symbol, timeframe, days_back=180):
                 range_val = "1d"
             elif timeframe == "2m":
                 interval = "2m"
+                range_val = "5d"
+            elif timeframe == "3m":
+                interval = "3m"
                 range_val = "5d"
             elif timeframe == "5m":
                 interval = "5m"
@@ -103,6 +107,9 @@ def generate_mock_data(symbol, timeframe, days_back=180):
             elif timeframe == "60m" or timeframe == "1h":
                 interval = "60m"
                 range_val = "1mo"
+            elif timeframe == "4h":
+                interval = "4h"
+                range_val = "3mo"
             elif timeframe == "1d":
                 interval = "1d"
                 range_val = "1y"
@@ -153,6 +160,17 @@ def generate_mock_data(symbol, timeframe, days_back=180):
             # Wenn keine Daten abgerufen werden konnten, verwende Fallback
             logger.warning("Keine NQ-Daten verfügbar, verwende Fallback-Daten")
         
+        # Wenn Yahoo Finance oder Alpha Vantage als Datenquelle ausgewählt ist, versuche echte Daten abzurufen
+        if data_source in ["yahoo", "alphavantage"]:
+            try:
+                # Hier würde der Code stehen, um echte Daten von Yahoo Finance oder Alpha Vantage abzurufen
+                # Da wir in diesem Beispiel nur Mock-Daten verwenden, überspringen wir diesen Schritt
+                logger.info(f"Verwende Mock-Daten für {symbol} mit Datenquelle {data_source}")
+                pass
+            except Exception as e:
+                logger.error(f"Fehler beim Abrufen echter Daten: {str(e)}")
+                logger.info("Verwende Fallback-Mock-Daten")
+        
         # Bestimme den Zeitrahmen
         if timeframe == "1m":
             interval = "1m"
@@ -160,6 +178,9 @@ def generate_mock_data(symbol, timeframe, days_back=180):
         elif timeframe == "2m":
             interval = "2m"
             days_back = min(days_back, 10)  # Begrenze auf 10 Tage für 2-Minuten-Daten
+        elif timeframe == "3m":
+            interval = "3m"
+            days_back = min(days_back, 12)  # Begrenze auf 12 Tage für 3-Minuten-Daten
         elif timeframe == "5m":
             interval = "5m"
             days_back = min(days_back, 15)  # Begrenze auf 15 Tage für 5-Minuten-Daten
@@ -172,6 +193,9 @@ def generate_mock_data(symbol, timeframe, days_back=180):
         elif timeframe == "60m" or timeframe == "1h":
             interval = "1h"
             days_back = min(days_back, 30)  # Begrenze auf 30 Tage für stündliche Daten
+        elif timeframe == "4h":
+            interval = "4h"
+            days_back = min(days_back, 60)  # Begrenze auf 60 Tage für 4-Stunden-Daten
         elif timeframe == "1d":
             interval = "1d"
         elif timeframe == "1wk" or timeframe == "1w":
@@ -217,6 +241,21 @@ def generate_mock_data(symbol, timeframe, days_back=180):
                                 trading_hours.append(trading_time)
                 current_date += timedelta(days=1)
             date_range = pd.DatetimeIndex(trading_hours)
+        elif interval == "3m":
+            # Für 3-Minuten-Daten
+            trading_hours = []
+            current_date = start_date
+            while current_date <= end_date:
+                if current_date.weekday() < 5:  # Montag bis Freitag
+                    for hour in range(9, 16):
+                        minute_start = 30 if hour == 9 else 0
+                        minute_end = 60
+                        for minute in range(minute_start, minute_end, 3):
+                            trading_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            if trading_time <= end_date:
+                                trading_hours.append(trading_time)
+                current_date += timedelta(days=1)
+            date_range = pd.DatetimeIndex(trading_hours)
         elif interval == "5m":
             # Für 5-Minuten-Daten
             trading_hours = []
@@ -254,128 +293,148 @@ def generate_mock_data(symbol, timeframe, days_back=180):
             while current_date <= end_date:
                 if current_date.weekday() < 5:  # Montag bis Freitag
                     for hour in range(9, 16):
-                        minute_start = 30 if hour == 9 else 0
-                        minute_end = 60
-                        for minute in range(minute_start, minute_end, 30):
+                        minute = 30 if hour == 9 else 0
+                        if minute < 60:  # Nur hinzufügen, wenn es eine gültige Minute ist
                             trading_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            if trading_time <= end_date:
+                                trading_hours.append(trading_time)
+                        if hour != 9:  # Für 9 Uhr nur 9:30, für andere Stunden auch XX:30
+                            trading_time = current_date.replace(hour=hour, minute=30, second=0, microsecond=0)
                             if trading_time <= end_date:
                                 trading_hours.append(trading_time)
                 current_date += timedelta(days=1)
             date_range = pd.DatetimeIndex(trading_hours)
-        elif interval == "1h":
+        elif interval == "1h" or interval == "60m":
             # Für 1-Stunden-Daten
             trading_hours = []
             current_date = start_date
             while current_date <= end_date:
                 if current_date.weekday() < 5:  # Montag bis Freitag
                     for hour in range(9, 16):
-                        if hour == 9:
-                            trading_time = current_date.replace(hour=hour, minute=30, second=0, microsecond=0)
-                        else:
-                            trading_time = current_date.replace(hour=hour, minute=0, second=0, microsecond=0)
+                        minute = 30 if hour == 9 else 0  # 9:30 für die erste Stunde
+                        trading_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        if trading_time <= end_date:
+                            trading_hours.append(trading_time)
+                current_date += timedelta(days=1)
+            date_range = pd.DatetimeIndex(trading_hours)
+        elif interval == "4h":
+            # Für 4-Stunden-Daten
+            trading_hours = []
+            current_date = start_date
+            while current_date <= end_date:
+                if current_date.weekday() < 5:  # Montag bis Freitag
+                    # 9:30 und 13:30 (zwei 4-Stunden-Blöcke während des Handelstages)
+                    for hour, minute in [(9, 30), (13, 30)]:
+                        trading_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
                         if trading_time <= end_date:
                             trading_hours.append(trading_time)
                 current_date += timedelta(days=1)
             date_range = pd.DatetimeIndex(trading_hours)
         elif interval == "1d":
-            # Für Tagesdaten nur Handelstage (Montag bis Freitag)
-            trading_days = []
-            current_date = start_date
-            while current_date <= end_date:
-                if current_date.weekday() < 5:  # Montag bis Freitag
-                    trading_days.append(current_date)
-                current_date += timedelta(days=1)
-            date_range = pd.DatetimeIndex(trading_days)
-        elif interval == "1wk":
-            # Für Wochendaten
-            date_range = pd.date_range(start=start_date, end=end_date, freq="W-FRI")
+            # Für Tages-Daten
+            date_range = pd.date_range(start=start_date, end=end_date, freq='B')  # 'B' für Business Days
+        elif interval == "1wk" or interval == "1w":
+            # Für Wochen-Daten
+            date_range = pd.date_range(start=start_date, end=end_date, freq='W-FRI')  # Freitag als Ende der Woche
         elif interval == "1mo":
-            # Für Monatsdaten
-            date_range = pd.date_range(start=start_date, end=end_date, freq="BM")
+            # Für Monats-Daten
+            date_range = pd.date_range(start=start_date, end=end_date, freq='BM')  # Business Month End
         else:
-            # Fallback auf Tagesdaten
-            date_range = pd.date_range(start=start_date, end=end_date, freq="B")
+            # Fallback auf Tages-Daten
+            date_range = pd.date_range(start=start_date, end=end_date, freq='B')
         
-        # Generiere Beispieldaten
-        np.random.seed(hash(symbol) % 100)  # Unterschiedliche Seed für jedes Symbol
+        # Generiere zufällige Preisdaten basierend auf dem Symbol
+        np.random.seed(hash(symbol) % 2**32)  # Verwende das Symbol als Seed für Reproduzierbarkeit
         
-        # Startpreis basierend auf Symbol
-        symbol_prices = {
-            "AAPL": 180,
-            "MSFT": 350,
-            "GOOGL": 140,
-            "AMZN": 170,
-            "TSLA": 200,
-            "BTC-USD": 60000,
-            "ETH-USD": 3000,
-            "EUR-USD": 1.08,
-            "GBP-USD": 1.27,
-            "USD-JPY": 150,
-            "NQ=F": 17500,
-            "NQ": 17500,
-        }
+        # Bestimme Startpreis basierend auf dem Symbol
+        if symbol == "AAPL":
+            base_price = 150.0
+        elif symbol == "MSFT":
+            base_price = 300.0
+        elif symbol == "GOOGL":
+            base_price = 2800.0
+        elif symbol == "AMZN":
+            base_price = 3300.0
+        elif symbol == "TSLA":
+            base_price = 700.0
+        elif symbol == "BTC-USD":
+            base_price = 40000.0
+        elif symbol == "ETH-USD":
+            base_price = 2500.0
+        elif "USD" in symbol:
+            base_price = 1.0  # Für Forex
+        elif symbol == "NQ=F" or symbol == "NQ":
+            base_price = 15000.0  # Für NQ Futures
+        else:
+            base_price = 100.0  # Standardwert
         
-        base_price = symbol_prices.get(symbol, 100)
+        # Generiere Preisdaten mit realistischem Trend und Volatilität
+        n = len(date_range)
+        if n == 0:
+            logger.warning(f"Keine Datenpunkte für {symbol} mit Zeitrahmen {timeframe}")
+            return None
         
-        # Generiere OHLC-Daten mit realistischeren Preisbewegungen
-        volatility = 0.02
+        # Generiere Trend
+        trend = np.cumsum(np.random.normal(0.0001, 0.001, n))
+        
+        # Generiere Volatilität basierend auf dem Zeitrahmen
+        if interval in ["1m", "2m", "3m", "5m"]:
+            volatility = 0.001
+        elif interval in ["15m", "30m"]:
+            volatility = 0.002
+        elif interval in ["1h", "4h"]:
+            volatility = 0.005
+        elif interval == "1d":
+            volatility = 0.01
+        elif interval in ["1wk", "1w"]:
+            volatility = 0.02
+        elif interval == "1mo":
+            volatility = 0.03
+        else:
+            volatility = 0.01
+        
+        # Skaliere Volatilität basierend auf dem Asset-Typ
         if "BTC" in symbol or "ETH" in symbol:
-            volatility = 0.04  # Höhere Volatilität für Kryptowährungen
-        elif "NQ" in symbol:
-            volatility = 0.03  # Mittlere Volatilität für NQ Futures
+            volatility *= 3  # Höhere Volatilität für Krypto
+        elif "USD" in symbol:
+            volatility *= 0.1  # Niedrigere Volatilität für Forex
         
-        price_data = []
-        current_price = base_price
-        trend = np.random.choice([-1, 1]) * 0.0001  # Zufälliger Trend
+        # Generiere OHLC-Daten
+        close = base_price * (1 + trend + np.random.normal(0, volatility, n))
+        high = close * (1 + np.random.uniform(0, volatility * 2, n))
+        low = close * (1 - np.random.uniform(0, volatility * 2, n))
+        open_price = low + np.random.uniform(0, 1, n) * (high - low)
         
-        for i in range(len(date_range)):
-            # Ändere den Trend gelegentlich
-            if i % 20 == 0:
-                trend = np.random.normal(0, 0.0003)
-            
-            # Zufällige Preisbewegung mit Trend
-            daily_return = np.random.normal(trend, volatility)
-            current_price *= (1 + daily_return)
-            
-            # Generiere OHLC-Daten
-            high_low_range = current_price * volatility * 2
-            open_price = current_price * (1 + np.random.normal(0, 0.003))
-            close_price = current_price
-            high_price = max(open_price, close_price) + abs(np.random.normal(0, high_low_range/2))
-            low_price = min(open_price, close_price) - abs(np.random.normal(0, high_low_range/2))
-            
-            # Volumen mit höheren Werten bei größeren Preisbewegungen
-            volume_base = np.random.randint(1000000, 10000000)
-            volume_factor = 1 + abs(daily_return) * 10
-            volume = int(volume_base * volume_factor)
-            
-            price_data.append({
-                'date': date_range[i],
-                'open': open_price,
-                'high': high_price,
-                'low': low_price,
-                'close': close_price,
-                'volume': volume
-            })
+        # Stelle sicher, dass OHLC-Beziehungen eingehalten werden
+        for i in range(n):
+            high[i] = max(open_price[i], close[i], high[i])
+            low[i] = min(open_price[i], close[i], low[i])
         
-        return pd.DataFrame(price_data)
+        # Generiere Volumendaten
+        volume = np.random.uniform(base_price * 10000, base_price * 100000, n)
+        
+        # Erstelle DataFrame
+        df = pd.DataFrame({
+            'date': date_range,
+            'open': open_price,
+            'high': high,
+            'low': low,
+            'close': close,
+            'volume': volume
+        })
+        
+        # Setze 'date' als Index
+        df.set_index('date', inplace=True)
+        
+        # Füge 'date' als Spalte hinzu (für Plotly)
+        df['date'] = df.index
+        
+        logger.info(f"Mock-Daten für {symbol} mit Zeitrahmen {timeframe} generiert: {len(df)} Datenpunkte")
+        return df
     
     except Exception as e:
-        # Bei Fehlern verwende Fallback-Daten
-        logger.error(f"Fehler beim Generieren von Daten für {symbol}: {str(e)}")
-        
-        # Bestimme Asset-Typ für Fallback-Daten
-        if "BTC" in symbol or "ETH" in symbol:
-            asset_type = "Krypto"
-        elif "USD" in symbol or "JPY" in symbol or "EUR" in symbol or "GBP" in symbol:
-            asset_type = "Forex"
-        elif "NQ" in symbol:
-            asset_type = "Futures"
-        else:
-            asset_type = "Aktien"
-        
-        # Verwende Fallback-Daten
-        return ErrorHandler.get_fallback_data(asset_type, timeframe)
+        logger.error(f"Fehler beim Generieren der Mock-Daten: {str(e)}")
+        return None
 
 def create_interactive_chart(df, symbol, chart_type="candlestick", timeframe="1d", drawing_data=None):
     """
@@ -385,7 +444,7 @@ def create_interactive_chart(df, symbol, chart_type="candlestick", timeframe="1d
         df (pd.DataFrame): DataFrame mit OHLCV-Daten
         symbol (str): Das Symbol des Assets
         chart_type (str): Der Chart-Typ ("line", "candlestick", "ohlc")
-        timeframe (str): Der Zeitrahmen ("1m", "2m", "5m", "15m", "30m", "60m", "1d", "1wk", "1mo")
+        timeframe (str): Der Zeitrahmen ("1m", "2m", "3m", "5m", "15m", "30m", "60m", "1h", "4h", "1d", "1wk", "1mo")
         drawing_data (dict): Daten für Zeichnungen auf dem Chart
         
     Returns:
@@ -634,7 +693,7 @@ def create_interactive_chart(df, symbol, chart_type="candlestick", timeframe="1d
             rangeslider_visible=False,
             rangebreaks=[
                 dict(bounds=["sat", "mon"]),  # Verstecke Wochenenden
-            ] if timeframe not in ["1m", "2m", "5m", "15m", "30m", "60m", "1h"] else [],  # Nur für Tages- und Wochencharts
+            ] if timeframe not in ["1m", "2m", "3m", "5m", "15m", "30m", "60m", "1h", "4h"] else [],  # Nur für Tages- und Wochencharts
         )
         
         # Konfiguriere Interaktivität
@@ -649,16 +708,16 @@ def create_interactive_chart(df, symbol, chart_type="candlestick", timeframe="1d
         return fig
     
     except Exception as e:
-        logger.error(f"Fehler beim Erstellen des Charts: {str(e)}")
+        logger.error(f"Fehler beim Erstellen des interaktiven Charts: {str(e)}")
         
-        # Erstelle einen Fallback-Chart mit Fehlermeldung
+        # Erstelle Chart mit Fehlermeldung
         fig = go.Figure()
         fig.add_annotation(
             text=f"Fehler beim Erstellen des Charts: {str(e)}",
             xref="paper", yref="paper",
             x=0.5, y=0.5,
             showarrow=False,
-            font=dict(color=colors['danger'], size=16)
+            font=dict(color=colors['danger'], size=14)
         )
         fig.update_layout(
             paper_bgcolor=colors['background'],
@@ -698,10 +757,12 @@ def get_available_timeframes():
     return [
         {"label": "1m", "value": "1m", "group": "Minuten"},
         {"label": "2m", "value": "2m", "group": "Minuten"},
+        {"label": "3m", "value": "3m", "group": "Minuten"},
         {"label": "5m", "value": "5m", "group": "Minuten"},
         {"label": "15m", "value": "15m", "group": "Minuten"},
         {"label": "30m", "value": "30m", "group": "Minuten"},
         {"label": "1h", "value": "1h", "group": "Stunden"},
+        {"label": "4h", "value": "4h", "group": "Stunden"},
         {"label": "1d", "value": "1d", "group": "Tage"},
         {"label": "1w", "value": "1w", "group": "Wochen"},
         {"label": "1mo", "value": "1mo", "group": "Monate"},
@@ -728,8 +789,8 @@ def get_currency_for_symbol(symbol):
         "EUR-USD": "USD",
         "GBP-USD": "USD",
         "USD-JPY": "JPY",
-        "NQ=F": "Punkte",
-        "NQ": "Punkte",
+        "NQ=F": "USD",
+        "NQ": "USD",
     }
     
     return currency_map.get(symbol, "")

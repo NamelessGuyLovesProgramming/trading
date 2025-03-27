@@ -27,14 +27,15 @@ logger = logging.getLogger("trading_dashboard.chart_callbacks")
 
 @callback(
     Output("price-chart", "figure"),
-    Input("asset-select", "value"),
+    Input("symbol-input", "value"),
     Input("line-chart-button", "n_clicks"),
     Input("candlestick-chart-button", "n_clicks"),
     Input("ohlc-chart-button", "n_clicks"),
     Input("active-timeframe-store", "data"),
     Input("drawing-data-store", "data"),
+    Input("data-source", "value"),  # Datenquelle als Input hinzugefügt
 )
-def update_interactive_chart(asset, line_clicks, candlestick_clicks, ohlc_clicks, timeframe, drawing_data):
+def update_interactive_chart(asset, line_clicks, candlestick_clicks, ohlc_clicks, timeframe, drawing_data, data_source):
     """
     Aktualisiert den Preischart basierend auf dem ausgewählten Asset, Chart-Typ und Zeitrahmen.
     """
@@ -55,8 +56,8 @@ def update_interactive_chart(asset, line_clicks, candlestick_clicks, ohlc_clicks
                 chart_type = "candlestick"
             elif button_id == "ohlc-chart-button":
                 chart_type = "ohlc"
-            elif button_id == "asset-select" or button_id == "active-timeframe-store":
-                # Wenn Asset oder Zeitrahmen geändert wurde, behalte den aktuellen Chart-Typ bei
+            elif button_id in ["symbol-input", "active-timeframe-store", "data-source"]:
+                # Wenn Asset, Zeitrahmen oder Datenquelle geändert wurde, behalte den aktuellen Chart-Typ bei
                 # Bestimme den aktuellen Chart-Typ anhand der Button-Farben
                 if line_clicks and candlestick_clicks and ohlc_clicks:
                     # Wenn alle Buttons geklickt wurden, verwende den zuletzt geklickten
@@ -75,8 +76,8 @@ def update_interactive_chart(asset, line_clicks, candlestick_clicks, ohlc_clicks
         
         # Generiere Daten für das ausgewählte Asset und den Zeitrahmen
         try:
-            logger.info(f"Generiere Daten für {asset} mit Zeitrahmen {timeframe}")
-            df = generate_mock_data(asset, timeframe)
+            logger.info(f"Generiere Daten für {asset} mit Zeitrahmen {timeframe} und Datenquelle {data_source}")
+            df = generate_mock_data(asset, timeframe, data_source=data_source)
             
             if df is None or df.empty:
                 logger.warning(f"Keine Daten für {asset} mit Zeitrahmen {timeframe}")
@@ -240,7 +241,7 @@ def update_drawing_tool_buttons(trendline_clicks, horizontal_clicks, rectangle_c
         return "secondary", True, "secondary", True, "secondary", True, "secondary", True, "secondary", True, None
 
 @callback(
-    Output("asset-select", "options"),
+    Output("asset-options", "data"),
     Input("asset-search", "value"),
 )
 def update_asset_options(search_value):
@@ -264,92 +265,47 @@ def update_asset_options(search_value):
     
     except Exception as e:
         logger.error(f"Fehler beim Aktualisieren der Asset-Optionen: {str(e)}")
-        # Fallback: Alle Assets
-        return get_available_assets()
+        return []
 
 @callback(
-    Output("timeframe-buttons-container", "children"),
-    Output("active-timeframe-store", "data", allow_duplicate=True),
-    Input("url", "pathname"),
-    State("active-timeframe-store", "data"),
+    Output("line-chart-button", "color"),
+    Output("line-chart-button", "outline"),
+    Output("candlestick-chart-button", "color"),
+    Output("candlestick-chart-button", "outline"),
+    Output("ohlc-chart-button", "color"),
+    Output("ohlc-chart-button", "outline"),
+    Input("line-chart-button", "n_clicks"),
+    Input("candlestick-chart-button", "n_clicks"),
+    Input("ohlc-chart-button", "n_clicks"),
 )
-def update_timeframe_buttons(pathname, active_timeframe):
+def update_chart_type_buttons(line_clicks, candlestick_clicks, ohlc_clicks):
     """
-    Aktualisiert die Zeitrahmen-Buttons basierend auf den verfügbaren Zeitrahmen.
-    """
-    try:
-        timeframes = get_available_timeframes()
-        
-        # Gruppiere Zeitrahmen nach Gruppe
-        grouped_timeframes = {}
-        for tf in timeframes:
-            group = tf["group"]
-            if group not in grouped_timeframes:
-                grouped_timeframes[group] = []
-            grouped_timeframes[group].append(tf)
-        
-        # Erstelle Buttons für jeden Zeitrahmen
-        button_groups = []
-        
-        for group, tfs in grouped_timeframes.items():
-            buttons = []
-            for tf in tfs:
-                # Bestimme, ob der Button aktiv ist
-                is_active = tf["value"] == active_timeframe
-                
-                buttons.append(
-                    html.Button(
-                        tf["label"],
-                        id={"type": "timeframe-button", "index": tf["value"]},
-                        className=f"btn {'btn-primary' if is_active else 'btn-outline-secondary'} btn-sm mx-1",
-                        style={"minWidth": "40px"}
-                    )
-                )
-            
-            # Erstelle eine Button-Gruppe für diese Kategorie
-            button_group = html.Div(
-                [
-                    html.Span(f"{group}: ", className="text-muted me-2 d-none d-md-inline"),
-                    html.Div(buttons, className="d-flex flex-wrap")
-                ],
-                className="d-flex align-items-center mb-2"
-            )
-            
-            button_groups.append(button_group)
-        
-        return html.Div(button_groups, className="timeframe-buttons"), active_timeframe
-    
-    except Exception as e:
-        logger.error(f"Fehler beim Aktualisieren der Zeitrahmen-Buttons: {str(e)}")
-        # Fallback: Standard-Zeitrahmen-Buttons
-        return html.Div([
-            html.Button("1h", id="timeframe-1h-button", className="btn btn-outline-secondary btn-sm mx-1"),
-            html.Button("1d", id="timeframe-1d-button", className="btn btn-primary btn-sm mx-1"),
-            html.Button("1w", id="timeframe-1w-button", className="btn btn-outline-secondary btn-sm mx-1"),
-        ]), active_timeframe
-
-@callback(
-    Output("active-timeframe-store", "data", allow_duplicate=True),
-    Input({"type": "timeframe-button", "index": dash.ALL}, "n_clicks"),
-    State("active-timeframe-store", "data"),
-    prevent_initial_call=True
-)
-def handle_timeframe_button_click(n_clicks_list, active_timeframe):
-    """
-    Behandelt Klicks auf die Zeitrahmen-Buttons.
+    Aktualisiert die Farben der Chart-Typ-Buttons basierend auf dem ausgewählten Typ.
     """
     try:
         ctx = dash.callback_context
         if not ctx.triggered:
-            raise PreventUpdate
+            # Standardmäßig ist Candlestick ausgewählt
+            return "primary", True, "primary", False, "primary", True
         
-        # Bestimme, welcher Button geklickt wurde
         button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        timeframe_value = eval(button_id)["index"]
         
-        return timeframe_value
+        # Setze alle Buttons auf inaktiv
+        line_color, line_outline = "primary", True
+        candlestick_color, candlestick_outline = "primary", True
+        ohlc_color, ohlc_outline = "primary", True
+        
+        # Aktiviere den geklickten Button
+        if button_id == "line-chart-button":
+            line_color, line_outline = "primary", False
+        elif button_id == "candlestick-chart-button":
+            candlestick_color, candlestick_outline = "primary", False
+        elif button_id == "ohlc-chart-button":
+            ohlc_color, ohlc_outline = "primary", False
+        
+        return line_color, line_outline, candlestick_color, candlestick_outline, ohlc_color, ohlc_outline
     
     except Exception as e:
-        logger.error(f"Fehler beim Behandeln der Zeitrahmen-Button-Klicks: {str(e)}")
-        # Fallback: Behalte den aktuellen Zeitrahmen bei
-        return active_timeframe
+        logger.error(f"Fehler beim Aktualisieren der Chart-Typ-Buttons: {str(e)}")
+        # Fallback: Candlestick aktiv
+        return "primary", True, "primary", False, "primary", True
